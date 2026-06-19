@@ -82,7 +82,8 @@ def compress_response_fixtures(
     rows: list[dict[str, Any]] = []
     for file in files:
         payload = json.loads(file.read_text(encoding="utf-8"))
-        response = payload.get("response", payload) if isinstance(payload, dict) else payload
+        wrapped = isinstance(payload, dict) and "response" in payload
+        response = payload["response"] if wrapped else payload
         before = response_token_count(response)
         status = "SKIPPED_UNDER_CAP"
         compressed = response
@@ -92,8 +93,11 @@ def compress_response_fixtures(
             )
             status = "COMPRESSED"
         after = response_token_count(compressed)
-        output_payload = dict(payload) if isinstance(payload, dict) else {"response": payload}
-        output_payload["response"] = compressed
+        if wrapped:
+            output_payload = dict(payload)
+            output_payload["response"] = compressed
+        else:
+            output_payload = compressed
         out_file = out_dir / file.name
         out_file.write_text(json.dumps(output_payload, indent=2, sort_keys=True) + "\n")
         rows.append(
