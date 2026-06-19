@@ -66,9 +66,10 @@ def test_config_apply_dry_run_writes_patch_without_changing_config(tmp_path: Pat
     report = json.loads(patch.read_text(encoding="utf-8"))
     assert report["dry_run"] is True
     assert report["actions"] == [
-        {"action": "disable_tool", "server": "github", "tool": "delete_repo"}
+        {"action": "disable_tool", "server": "github", "tool": "delete_repo", "target": "inline"}
     ]
     assert "should-not-leak" not in json.dumps(report)
+    # single inline server, nothing command-discovered -> fully enforceable
     assert "CONFIG_APPLY_STATUS=PASS" in result.stdout
 
 
@@ -118,4 +119,11 @@ def test_config_demo_prints_safe_apply_proof() -> None:
     assert int(lines["CONFIG_PATCH_ACTIONS"]) > 0
     assert lines["CONFIG_DRY_RUN_UNCHANGED"] == "true"
     assert lines["CONFIG_WRITE_BACKUP_CREATED"] == "true"
-    assert lines["CONFIG_APPLY_STATUS"] == "PASS"
+    # v0.2 contract: lock is fingerprint-bound, the external toolsListPath file is patched,
+    # a command-discovered server is honestly reported PARTIAL (never a false PASS), and the
+    # disable actually takes effect on rescan.
+    assert lines["CONFIG_FINGERPRINT_MATCH"] == "true"
+    assert int(lines["CONFIG_EXTERNAL_PATCHED"]) >= 1
+    assert int(lines["CONFIG_NOT_PATCHABLE"]) >= 1
+    assert lines["CONFIG_ENFORCED_ON_RESCAN"] == "true"
+    assert lines["CONFIG_APPLY_STATUS"] == "PARTIAL"

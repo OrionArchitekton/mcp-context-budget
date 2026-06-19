@@ -201,12 +201,19 @@ def cmd_config_apply(args: argparse.Namespace) -> int:
         write=args.write,
         backup_dir=args.backup_dir,
         patch_out=args.patch_out,
+        allow_fingerprint_mismatch=args.allow_fingerprint_mismatch,
     )
     print(f"CONFIG_PATCH_ACTIONS={len(report['actions'])}")
     print(f"CONFIG_DRY_RUN_UNCHANGED={str(report['dry_run']).lower()}")
+    print(f"CONFIG_FINGERPRINT_MATCH={str(report['fingerprint_match']).lower()}")
+    print(f"CONFIG_EXTERNAL_PATCHED={len(report['external_targets'])}")
+    print(f"CONFIG_NOT_PATCHABLE={len(report['not_patchable'])}")
+    for item in report["not_patchable"]:
+        print(f"  not-patchable: {item['server']} -- {item['reason']}", file=sys.stderr)
     if args.write:
-        print(f"CONFIG_WRITE_BACKUP_CREATED={str(bool(report.get('backup_path'))).lower()}")
-    print("CONFIG_APPLY_STATUS=PASS")
+        print(f"CONFIG_WRITE_BACKUP_CREATED={str(bool(report.get('backup_paths'))).lower()}")
+    # PARTIAL is an HONEST status (some servers could not be enforced), never a false PASS.
+    print(f"CONFIG_APPLY_STATUS={report['status']}")
     return 0
 
 
@@ -215,8 +222,26 @@ def cmd_config_demo(args: argparse.Namespace) -> int:
     print(f"CONFIG_PATCH_ACTIONS={result['config_patch_actions']}")
     print(f"CONFIG_DRY_RUN_UNCHANGED={str(result['config_dry_run_unchanged']).lower()}")
     print(f"CONFIG_WRITE_BACKUP_CREATED={str(result['config_write_backup_created']).lower()}")
+    print(f"CONFIG_EXTERNAL_PATCHED={result['config_external_patched']}")
+    print(f"CONFIG_NOT_PATCHABLE={result['config_not_patchable']}")
+    print(f"CONFIG_FINGERPRINT_MATCH={str(result['config_fingerprint_match']).lower()}")
+    remaining = result["config_remaining_after_disable"]
+    enforced = "github/delete_repo" not in remaining and "linear/bulk_delete" not in remaining
+    kept = "github/get_issue" in remaining and "linear/create_issue" in remaining
+    print(f"CONFIG_ENFORCED_ON_RESCAN={str(enforced and kept).lower()}")
+    # PARTIAL is expected here (the demo includes a command-discovered server); the demo
+    # passes when the contract invariants hold: fingerprint bound, toolsListPath patched,
+    # not-patchable surfaced, and disabling actually drops tools on rescan.
     print(f"CONFIG_APPLY_STATUS={result['config_apply_status']}")
-    return 0 if result["config_apply_status"] == "PASS" else 1
+    ok = (
+        result["config_fingerprint_match"]
+        and result["config_external_patched"] >= 1
+        and result["config_not_patchable"] >= 1
+        and enforced
+        and kept
+        and result["config_apply_status"] in ("PASS", "PARTIAL")
+    )
+    return 0 if ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -306,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     config_write_mode.add_argument("--write", action="store_true")
     config_apply.add_argument("--backup-dir", type=Path)
     config_apply.add_argument("--patch-out", type=Path)
+    config_apply.add_argument(
+        "--allow-fingerprint-mismatch",
+        action="store_true",
+        help="apply even if the lock's config_fingerprint does not match this config (unsafe)",
+    )
     config_apply.set_defaults(func=cmd_config_apply)
 
     config_demo = sub.add_parser("config-demo")

@@ -148,6 +148,21 @@ mcp-context-budget config-apply \
 
 Reports redact environment values.
 
+The apply contract is enforced, not advisory:
+
+- **Inline and `toolsListPath` tools are both patched.** A server whose tools
+  live in an external `tools/list` JSON has that file patched (and backed up)
+  too — not silently skipped.
+- **The lock is bound to the config.** Each lock records a `config_fingerprint`
+  of its tool universe; `config-apply` refuses a lock whose fingerprint does not
+  match the target config (a foreign/stale lock would otherwise disable every
+  tool and still report success). Override with `--allow-fingerprint-mismatch`.
+- **Honest status, never a false PASS.** A command-discovered server (no inline
+  `tools`, no `toolsListPath`) cannot be enforced without live startup, so it is
+  reported under `not_patchable` and the status is `PARTIAL`, not `PASS`.
+- **Disabling takes effect.** The loader honors `enabled: false`, so a disabled
+  tool (or server) drops out of the budget on the next `scan`/`select`.
+
 ## Docker
 
 ```bash

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,18 @@ from mcp_context_budget.tokens import estimate_tokens
 
 def stable_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def fingerprint_tool_ids(tool_ids: Iterable[str]) -> str:
+    """Stable fingerprint of a config's enabled tool universe (sorted, de-duped).
+
+    A lock records this for the catalog it was generated from; `config-apply`
+    recomputes it for the target config and refuses to apply a lock whose
+    fingerprint does not match (a foreign/stale lock would otherwise disable
+    every tool and still report success).
+    """
+    joined = "\n".join(sorted({str(tid) for tid in tool_ids}))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)

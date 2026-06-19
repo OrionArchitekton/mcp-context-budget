@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mcp_context_budget.models import ToolRecord
+from mcp_context_budget.models import ToolRecord, fingerprint_tool_ids
 from mcp_context_budget.tokens import ESTIMATOR_MODE, estimate_tokens
 
 
@@ -34,8 +34,9 @@ class ScanResult:
     def to_lock(self, *, selected_tools: list[ToolRecord] | None = None) -> dict[str, Any]:
         selected = selected_tools if selected_tools is not None else self.tools
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "estimator": ESTIMATOR_MODE,
+            "config_fingerprint": fingerprint_tool_ids(tool.tool_id for tool in self.tools),
             "server_count": self.server_count,
             "tool_count": self.tool_count,
             "total_schema_tokens": self.total_schema_tokens,
