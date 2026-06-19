@@ -6,10 +6,13 @@ import sys
 from pathlib import Path
 
 from mcp_context_budget.budget import check_lock, load_response_fixtures, scan_records
+from mcp_context_budget.compress import compress_response_fixtures, run_compress_demo
+from mcp_context_budget.config_edit import apply_config_selection, run_config_demo
 from mcp_context_budget.demo import run_demo
 from mcp_context_budget.loaders import load_records
 from mcp_context_budget.reporting import markdown_report, sarif_from_lock, write_json
 from mcp_context_budget.selector import select_tools
+from mcp_context_budget.semantic import run_semantic_demo, select_semantic_tools
 
 
 def _add_input_args(parser: argparse.ArgumentParser) -> None:
@@ -120,6 +123,127 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0 if result["budget_status"] == "PASS" else 1
 
 
+def cmd_semantic_select(args: argparse.Namespace) -> int:
+    records, manifest = _records_from_args(args)
+    scan = scan_records(records)
+    selected = select_semantic_tools(
+        records,
+        task=args.task,
+        max_tools=args.max_tools,
+        max_schema_tokens=args.max_schema_tokens,
+        embedding_backend=args.embedding_backend,
+        embedding_file=args.embedding_file,
+        ollama_url=args.ollama_url,
+        ollama_model=args.ollama_model,
+    )
+    lock = scan.to_lock(selected_tools=selected)
+    lock["source_manifest"] = manifest
+    lock["selection"] = {
+        "mode": "semantic",
+        "embedding_backend": args.embedding_backend,
+        "task": args.task,
+    }
+    if args.out_lock:
+        write_json(args.out_lock, lock)
+    if args.json_out:
+        write_json(args.json_out, lock)
+    print(f"SELECTED_TOOLS={len(selected)}")
+    print(f"AFTER_SCHEMA_TOKENS={lock['selected_schema_tokens']}")
+    print(f"SEMANTIC_SELECTED_TOOL={selected[0].tool_id}")
+    for tool in selected:
+        print(f"SELECTED_TOOL={tool.tool_id}")
+    return 0
+
+
+def cmd_semantic_demo(args: argparse.Namespace) -> int:
+    result = run_semantic_demo(
+        task=args.task,
+        max_tools=args.max_tools,
+        max_schema_tokens=args.max_schema_tokens,
+    )
+    print(f"LEXICAL_SELECTED_TOOL={result['lexical_selected_tool']}")
+    print(f"LEXICAL_SELECTED_WRONG={str(result['lexical_selected_wrong']).lower()}")
+    print(f"SEMANTIC_SELECTED_TOOL={result['semantic_selected_tool']}")
+    for tool_id in result["semantic_selected_tools"]:
+        print(f"SELECTED_TOOL={tool_id}")
+    print(f"SEMANTIC_STATUS={result['semantic_status']}")
+    return 0 if result["semantic_status"] == "PASS" else 1
+
+
+def cmd_compress_responses(args: argparse.Namespace) -> int:
+    keep_fields = [field.strip() for field in args.keep_fields.split(",") if field.strip()]
+    report = compress_response_fixtures(
+        args.fixtures,
+        max_response_tokens=args.max_response_tokens,
+        out_dir=args.out_dir,
+        report_path=args.report,
+        keep_fields=keep_fields,
+        strategy=args.strategy,
+    )
+    print(f"COMPRESSED_RESPONSES={report['compressed']}")
+    print(f"COMPRESSION_STATUS={report['status']}")
+    return 0 if report["status"] == "PASS" else 1
+
+
+def cmd_compress_demo(args: argparse.Namespace) -> int:
+    result = run_compress_demo(max_response_tokens=args.max_response_tokens)
+    print(f"BEFORE_RESPONSE_TOKENS={result['before_response_tokens']}")
+    print(f"AFTER_RESPONSE_TOKENS={result['after_response_tokens']}")
+    print(f"COMPRESSION_STATUS={result['compression_status']}")
+    return 0 if result["compression_status"] == "PASS" else 1
+
+
+def cmd_config_apply(args: argparse.Namespace) -> int:
+    report = apply_config_selection(
+        config_path=args.config,
+        lock_path=args.lock,
+        mode=args.mode,
+        write=args.write,
+        backup_dir=args.backup_dir,
+        patch_out=args.patch_out,
+        allow_fingerprint_mismatch=args.allow_fingerprint_mismatch,
+    )
+    print(f"CONFIG_PATCH_ACTIONS={len(report['actions'])}")
+    print(f"CONFIG_DRY_RUN_UNCHANGED={str(report['dry_run']).lower()}")
+    print(f"CONFIG_FINGERPRINT_MATCH={str(report['fingerprint_match']).lower()}")
+    print(f"CONFIG_EXTERNAL_PATCHED={len(report['external_targets'])}")
+    print(f"CONFIG_NOT_PATCHABLE={len(report['not_patchable'])}")
+    for item in report["not_patchable"]:
+        print(f"  not-patchable: {item['server']} -- {item['reason']}", file=sys.stderr)
+    if args.write:
+        print(f"CONFIG_WRITE_BACKUP_CREATED={str(bool(report.get('backup_paths'))).lower()}")
+    # PARTIAL is an HONEST status (some servers could not be enforced), never a false PASS.
+    print(f"CONFIG_APPLY_STATUS={report['status']}")
+    return 0
+
+
+def cmd_config_demo(args: argparse.Namespace) -> int:
+    result = run_config_demo()
+    print(f"CONFIG_PATCH_ACTIONS={result['config_patch_actions']}")
+    print(f"CONFIG_DRY_RUN_UNCHANGED={str(result['config_dry_run_unchanged']).lower()}")
+    print(f"CONFIG_WRITE_BACKUP_CREATED={str(result['config_write_backup_created']).lower()}")
+    print(f"CONFIG_EXTERNAL_PATCHED={result['config_external_patched']}")
+    print(f"CONFIG_NOT_PATCHABLE={result['config_not_patchable']}")
+    print(f"CONFIG_FINGERPRINT_MATCH={str(result['config_fingerprint_match']).lower()}")
+    remaining = result["config_remaining_after_disable"]
+    enforced = "github/delete_repo" not in remaining and "linear/bulk_delete" not in remaining
+    kept = "github/get_issue" in remaining and "linear/create_issue" in remaining
+    print(f"CONFIG_ENFORCED_ON_RESCAN={str(enforced and kept).lower()}")
+    # PARTIAL is expected here (the demo includes a command-discovered server); the demo
+    # passes when the contract invariants hold: fingerprint bound, toolsListPath patched,
+    # not-patchable surfaced, and disabling actually drops tools on rescan.
+    print(f"CONFIG_APPLY_STATUS={result['config_apply_status']}")
+    ok = (
+        result["config_fingerprint_match"]
+        and result["config_external_patched"] >= 1
+        and result["config_not_patchable"] >= 1
+        and enforced
+        and kept
+        and result["config_apply_status"] in ("PASS", "PARTIAL")
+    )
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcp-context-budget")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -161,6 +285,61 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--max-schema-tokens", type=int, default=6000)
     demo.add_argument("--max-response-tokens", type=int, default=4000)
     demo.set_defaults(func=cmd_demo)
+
+    semantic_select = sub.add_parser("semantic-select")
+    _add_input_args(semantic_select)
+    semantic_select.add_argument("--task", required=True)
+    semantic_select.add_argument("--max-tools", type=int, default=8)
+    semantic_select.add_argument("--max-schema-tokens", type=int, default=6000)
+    semantic_select.add_argument(
+        "--embedding-backend", choices=("fixture", "ollama"), default="fixture"
+    )
+    semantic_select.add_argument("--embedding-file", type=Path)
+    semantic_select.add_argument("--ollama-url", default="http://localhost:11434")
+    semantic_select.add_argument("--ollama-model", default="nomic-embed-text")
+    semantic_select.add_argument("--out-lock", type=Path)
+    semantic_select.add_argument("--json-out", type=Path)
+    semantic_select.set_defaults(func=cmd_semantic_select)
+
+    semantic_demo = sub.add_parser("semantic-demo")
+    semantic_demo.add_argument("--task", required=True)
+    semantic_demo.add_argument("--max-tools", type=int, default=3)
+    semantic_demo.add_argument("--max-schema-tokens", type=int, default=3000)
+    semantic_demo.set_defaults(func=cmd_semantic_demo)
+
+    compress_responses = sub.add_parser("compress-responses")
+    compress_responses.add_argument("--fixtures", type=Path, required=True)
+    compress_responses.add_argument("--max-response-tokens", type=int, required=True)
+    compress_responses.add_argument("--out-dir", type=Path, required=True)
+    compress_responses.add_argument("--report", type=Path)
+    compress_responses.add_argument("--strategy", choices=("extractive",), default="extractive")
+    compress_responses.add_argument("--keep-fields", default="id,title,url,state,summary")
+    compress_responses.set_defaults(func=cmd_compress_responses)
+
+    compress_demo = sub.add_parser("compress-demo")
+    compress_demo.add_argument("--max-response-tokens", type=int, default=4000)
+    compress_demo.set_defaults(func=cmd_compress_demo)
+
+    config_apply = sub.add_parser("config-apply")
+    config_apply.add_argument("--config", type=Path, required=True)
+    config_apply.add_argument("--lock", type=Path, required=True)
+    config_apply.add_argument(
+        "--mode", choices=("disable-unselected",), default="disable-unselected"
+    )
+    config_write_mode = config_apply.add_mutually_exclusive_group()
+    config_write_mode.add_argument("--dry-run", action="store_true")
+    config_write_mode.add_argument("--write", action="store_true")
+    config_apply.add_argument("--backup-dir", type=Path)
+    config_apply.add_argument("--patch-out", type=Path)
+    config_apply.add_argument(
+        "--allow-fingerprint-mismatch",
+        action="store_true",
+        help="apply even if the lock's config_fingerprint does not match this config (unsafe)",
+    )
+    config_apply.set_defaults(func=cmd_config_apply)
+
+    config_demo = sub.add_parser("config-demo")
+    config_demo.set_defaults(func=cmd_config_demo)
     return parser
 
 

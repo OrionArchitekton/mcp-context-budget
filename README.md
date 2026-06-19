@@ -10,12 +10,16 @@ developers a repeatable budget gate:
 - scan MCP config or `tools/list` fixtures
 - estimate schema and response-token cost
 - select a smaller task-relevant tool set with deterministic SQLite FTS5/BM25
+- optionally prove semantic tool selection from fixture or Ollama embeddings
 - write a lockfile for CI
 - fail builds when schema or response budgets regress
+- compress recorded response fixtures under a response budget
+- apply selected-tool locks back to caller-owned MCP config files
 - prove the spine with a Docker demo
 
-No private Orion services are required. v1 has no external runtime service
-dependency.
+No private Orion services are required. The core CLI has no external runtime
+service dependency. Semantic selection can optionally call Ollama only when the
+`--embedding-backend ollama` flag is explicitly selected.
 
 ## Install
 
@@ -52,7 +56,10 @@ BUDGET_STATUS=PASS
 ```bash
 mcp-context-budget scan --tool-list fixtures/demo-tools.json --out mcp-budget.report.md --lock-out mcp-budget.lock.json
 mcp-context-budget select --tool-list fixtures/demo-tools.json --task "triage a GitHub issue" --max-tools 8 --max-schema-tokens 6000 --out-lock mcp-budget.lock.json
+mcp-context-budget semantic-select --tool-list fixtures/demo-tools.json --task "triage a GitHub issue" --embedding-backend fixture --embedding-file embeddings.json --out-lock mcp-budget.lock.json
 mcp-context-budget check --lock mcp-budget.lock.json --max-schema-tokens 6000 --max-response-tokens 4000
+mcp-context-budget compress-responses --fixtures responses/ --max-response-tokens 4000 --out-dir compressed-responses --report compression-report.json
+mcp-context-budget config-apply --config mcp.json --lock mcp-budget.lock.json --dry-run --patch-out mcp-config.patch.json
 mcp-context-budget export --lock mcp-budget.lock.json --format sarif --out mcp-budget.sarif
 ```
 
@@ -60,10 +67,101 @@ mcp-context-budget export --lock mcp-budget.lock.json --format sarif --out mcp-b
 object. Server entries may include `toolsListPath` to point at a recorded
 `tools/list` JSON fixture. Environment values are redacted in reports.
 
-`--allow-start` is intentionally conservative in v1. The tool prints the exact
+`--allow-start` is intentionally conservative. The tool prints the exact
 stdio command that would be started, with environment values redacted, and
-refuses live process startup unless future v0.2 work adds a hardened MCP
+refuses live process startup unless future work adds a hardened MCP
 transport harness.
+
+### Semantic Selection
+
+`semantic-select` keeps the v0.1 lockfile shape but ranks tools by embedding
+similarity before applying `--max-tools` and `--max-schema-tokens`.
+
+Fixture mode is deterministic and requires no service:
+
+```bash
+mcp-context-budget semantic-select \
+  --tool-list tools.json \
+  --task "diagnose bug report" \
+  --embedding-backend fixture \
+  --embedding-file embeddings.json \
+  --out-lock semantic.lock.json
+```
+
+The fixture file must contain:
+
+```json
+{
+  "queries": {"diagnose bug report": [1.0, 0.0]},
+  "tools": {"github/get_issue": [1.0, 0.0]}
+}
+```
+
+Ollama mode uses stdlib HTTP and adds no Python package dependency:
+
+```bash
+mcp-context-budget semantic-select \
+  --tool-list tools.json \
+  --task "diagnose bug report" \
+  --embedding-backend ollama \
+  --ollama-url http://localhost:11434 \
+  --ollama-model nomic-embed-text
+```
+
+### Response Fixture Compression
+
+`compress-responses` reads one response fixture or a directory of `*.json`
+fixtures, writes compressed copies, and emits a JSON report.
+
+```bash
+mcp-context-budget compress-responses \
+  --fixtures responses/ \
+  --max-response-tokens 4000 \
+  --out-dir compressed-responses \
+  --report compression-report.json
+```
+
+The v0.2 strategy is deterministic extractive compression. It preserves common
+identifier fields and writes a `summary` when large body fields need to be cut.
+
+### Config Apply
+
+`config-apply` turns a selected-tool lock into a safe local MCP config patch.
+Dry-run is the default posture; `--write` is required before the config file is
+changed, and write mode creates a backup.
+
+```bash
+mcp-context-budget config-apply \
+  --config mcp.json \
+  --lock mcp-budget.lock.json \
+  --mode disable-unselected \
+  --dry-run \
+  --patch-out mcp-config.patch.json
+
+mcp-context-budget config-apply \
+  --config mcp.json \
+  --lock mcp-budget.lock.json \
+  --mode disable-unselected \
+  --write \
+  --backup-dir backups/
+```
+
+Reports redact environment values.
+
+The apply contract is enforced, not advisory:
+
+- **Inline and `toolsListPath` tools are both patched.** A server whose tools
+  live in an external `tools/list` JSON has that file patched (and backed up)
+  too — not silently skipped.
+- **The lock is bound to the config.** Each lock records a `config_fingerprint`
+  of its tool universe; `config-apply` refuses a lock whose fingerprint does not
+  match the target config (a foreign/stale lock would otherwise disable every
+  tool and still report success). Override with `--allow-fingerprint-mismatch`.
+- **Honest status, never a false PASS.** A command-discovered server (no inline
+  `tools`, no `toolsListPath`) cannot be enforced without live startup, so it is
+  reported under `not_patchable` and the status is `PARTIAL`, not `PASS`.
+- **Disabling takes effect.** The loader honors `enabled: false`, so a disabled
+  tool (or server) drops out of the budget on the next `scan`/`select`.
 
 ## Docker
 
@@ -78,12 +176,21 @@ docker run --rm mcp-context-budget:local demo \
 
 The image exposes no service port.
 
-## Deferred to v0.2
+v0.2 also includes independent Docker proof commands for the new capabilities:
+
+```bash
+docker run --rm mcp-context-budget:local semantic-demo \
+  --task "diagnose bug report" \
+  --max-tools 3 \
+  --max-schema-tokens 3000
+docker run --rm mcp-context-budget:local compress-demo --max-response-tokens 4000
+docker run --rm mcp-context-budget:local config-demo
+```
+
+## Deferred to v0.3
 
 - Live runtime MCP proxy/gateway that intercepts and routes actual tool calls.
-- Embedding-based semantic selector using Ollama or pgvector.
 - Browser UI.
-- Direct edits to user MCP configs.
 - Organization-wide background scanner.
 - Vendor-specific hosted dashboards.
 - Secret scanning beyond redaction and no-print checks.

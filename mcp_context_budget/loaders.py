@@ -22,6 +22,17 @@ def redact_env(env: object) -> dict[str, str]:
     return {str(key): REDACTION for key in sorted(env)}
 
 
+def is_enabled(raw: object) -> bool:
+    """A tool/server entry is honored unless it explicitly carries `enabled: false`.
+
+    This is the read side of the config-apply contract: once `config-apply` writes
+    `enabled: false`, a rescan must DROP that tool so the disable actually takes
+    effect on the budget. Non-dict entries return True so downstream parsing raises
+    the usual structural error rather than being silently skipped.
+    """
+    return not (isinstance(raw, dict) and raw.get("enabled") is False)
+
+
 def _server_items(payload: Any, *, default_server: str = "default") -> list[tuple[str, list[Any]]]:
     if isinstance(payload, list):
         return [(default_server, payload)]
@@ -74,7 +85,7 @@ def load_tool_list(path: Path, *, default_server: str = "default") -> list[ToolR
     payload = read_json(path)
     records: list[ToolRecord] = []
     for server, tools in _server_items(payload, default_server=default_server):
-        records.extend(_tool_from_payload(server, raw) for raw in tools)
+        records.extend(_tool_from_payload(server, raw) for raw in tools if is_enabled(raw))
     return records
 
 
@@ -98,9 +109,14 @@ def load_mcp_config(
             "env": redact_env(raw.get("env")),
             "allow_start": allow_start,
         }
+        if raw.get("enabled") is False:
+            manifest["servers"][name]["disabled"] = True
+            continue
         inline_tools = raw.get("tools")
         if isinstance(inline_tools, list):
-            records.extend(_tool_from_payload(name, tool) for tool in inline_tools)
+            records.extend(
+                _tool_from_payload(name, tool) for tool in inline_tools if is_enabled(tool)
+            )
         tool_path = (
             raw.get("toolsListPath") or raw.get("tools_list_path") or raw.get("toolListPath")
         )
