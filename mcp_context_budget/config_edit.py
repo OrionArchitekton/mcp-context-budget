@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import json
-import shutil
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from mcp_context_budget.loaders import REDACTION, read_json, redact_env
+
+
+def _exclusive_backup_path(backup_root: Path, config_name: str) -> Path:
+    """Return a backup path that does not yet exist, never clobbering a prior rollback copy."""
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%d%H%M%S%f")
+    candidate = backup_root / f"{config_name}.{stamp}.bak"
+    counter = 1
+    while candidate.exists():
+        candidate = backup_root / f"{config_name}.{stamp}.{counter}.bak"
+        counter += 1
+    return candidate
 
 
 def _mcp_servers(payload: Any) -> dict[str, Any]:
@@ -40,7 +50,7 @@ def build_config_patch(
             if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
                 continue
             tool_id = f"{server}/{tool['name']}"
-            if tool_id not in selected_tools:
+            if tool_id not in selected_tools and tool.get("enabled", True):
                 tool["enabled"] = False
                 actions.append(
                     {"action": "disable_tool", "server": str(server), "tool": tool["name"]}
@@ -73,12 +83,12 @@ def apply_config_selection(
         },
     }
     backup_path: Path | None = None
-    if write:
+    if write and actions:
         backup_root = backup_dir or config_path.parent
         backup_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(tz=UTC).strftime("%Y%m%d%H%M%S")
-        backup_path = backup_root / f"{config_path.name}.{stamp}.bak"
-        shutil.copy2(config_path, backup_path)
+        backup_path = _exclusive_backup_path(backup_root, config_path.name)
+        with backup_path.open("xb") as handle:
+            handle.write(before_text.encode("utf-8"))
         config_path.write_text(
             json.dumps(updated, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

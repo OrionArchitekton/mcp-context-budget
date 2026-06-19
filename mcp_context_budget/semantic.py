@@ -18,7 +18,7 @@ def _as_vector(raw: object, *, label: str) -> list[float]:
         raise ValueError(f"embedding vector for {label} must be a non-empty list")
     vector: list[float] = []
     for value in raw:
-        if not isinstance(value, int | float):
+        if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError(f"embedding vector for {label} must contain only numbers")
         vector.append(float(value))
     return vector
@@ -74,6 +74,8 @@ def _ollama_embedding(text: str, *, base_url: str, model: str) -> list[float]:
             body = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise ValueError(f"Ollama embedding request failed: {exc}") from exc
+    if not isinstance(body, dict):
+        raise ValueError("Ollama embedding response is not a JSON object")
     if "embedding" in body:
         return _as_vector(body["embedding"], label="ollama response")
     embeddings = body.get("embeddings")

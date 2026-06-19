@@ -29,7 +29,7 @@ def _source_text(response: Any) -> str:
 
 def _initial_extract(response: Any, keep_fields: list[str]) -> dict[str, Any]:
     if not isinstance(response, dict):
-        return {"summary": str(response)}
+        return {"summary": _source_text(response)}
     compact: dict[str, Any] = {}
     for field in keep_fields:
         if field == "summary":
@@ -75,11 +75,14 @@ def compress_response_fixtures(
     if strategy != "extractive":
         raise ValueError("only extractive compression is supported")
     fields = keep_fields or ["id", "title", "url", "state", "summary"]
+    files = _fixture_files(fixtures)
+    if not files:
+        raise ValueError(f"no JSON fixtures found at {fixtures}")
     out_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
-    for file in _fixture_files(fixtures):
+    for file in files:
         payload = json.loads(file.read_text(encoding="utf-8"))
-        response = payload.get("response", payload)
+        response = payload.get("response", payload) if isinstance(payload, dict) else payload
         before = response_token_count(response)
         status = "SKIPPED_UNDER_CAP"
         compressed = response
