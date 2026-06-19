@@ -127,3 +127,21 @@ def test_config_demo_proves_full_contract() -> None:
     assert "github/delete_repo" not in remaining
     assert "linear/bulk_delete" not in remaining
     assert {"github/get_issue", "linear/create_issue"} <= remaining
+
+
+def test_apply_rejects_non_string_selected_tools(tmp_path: Path) -> None:
+    cfg = tmp_path / "mcp.json"
+    _write(cfg, {"mcpServers": {"gh": {"command": "x", "tools": [{"name": "a"}]}}})
+    lock = tmp_path / "lock.json"
+    _write(lock, {"selected_tools": ["gh/a", 7, {"name": "b"}]})  # non-string entries
+    with pytest.raises(ValueError, match="only strings"):
+        apply_config_selection(config_path=cfg, lock_path=lock, write=False)
+
+
+def test_embedding_vector_rejects_non_finite_values() -> None:
+    from mcp_context_budget.semantic import _as_vector
+
+    assert _as_vector([0.1, 0.2], label="ok") == [0.1, 0.2]
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match="finite"):
+            _as_vector([0.1, bad], label="bad")

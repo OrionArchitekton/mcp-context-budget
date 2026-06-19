@@ -40,7 +40,9 @@ def _selected_tools(lock_payload: dict[str, Any]) -> set[str]:
     selected = lock_payload.get("selected_tools")
     if not isinstance(selected, list):
         raise ValueError("lock must contain a `selected_tools` list")
-    return {str(tool) for tool in selected}
+    if not all(isinstance(tool, str) for tool in selected):
+        raise ValueError("lock `selected_tools` must contain only strings")
+    return set(selected)
 
 
 def _tools_list_path(config_path: Path, raw: dict[str, Any]) -> Path | None:

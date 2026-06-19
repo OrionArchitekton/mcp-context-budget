@@ -20,6 +20,8 @@ def _as_vector(raw: object, *, label: str) -> list[float]:
     for value in raw:
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueError(f"embedding vector for {label} must contain only numbers")
+        if not math.isfinite(value):
+            raise ValueError(f"embedding vector for {label} must be finite (no NaN/Infinity)")
         vector.append(float(value))
     return vector
 
