@@ -5,6 +5,7 @@ import os
 import selectors
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -197,12 +198,18 @@ def introspect_server_tools(
     if isinstance(env, dict):
         child_env.update({str(key): str(value) for key, value in env.items()})
     process: subprocess.Popen[bytes] | None = None
+    # Capture the child's stderr to a temp file (NOT sys.stderr directly): a
+    # misbehaving server can echo its own injected secrets to stderr, and
+    # passing the stream through raw would leak them. A temp file (vs a PIPE)
+    # avoids any pipe-buffer deadlock while we synchronously read stdout. On
+    # cleanup we redact the configured env values before forwarding.
+    stderr_capture = tempfile.TemporaryFile(mode="w+b")
     try:
         process = subprocess.Popen(  # noqa: S603 - argv is explicit and shell=False.
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=sys.stderr,
+            stderr=stderr_capture,
             env=child_env,
             shell=False,
         )
@@ -261,6 +268,16 @@ def introspect_server_tools(
     finally:
         if process is not None:
             _terminate_process(process)
+        try:
+            stderr_capture.seek(0)
+            captured = stderr_capture.read().decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            captured = ""
+        finally:
+            stderr_capture.close()
+        if captured:
+            sys.stderr.write(redact_text(captured, env))
+            sys.stderr.flush()
 
 
 def run_fixture_mcp_server(*, mode: str = "ok") -> int:
