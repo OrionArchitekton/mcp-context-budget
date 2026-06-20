@@ -13,7 +13,7 @@ SENSITIVE_KEY_RE = re.compile(
 )
 TOKEN_VALUE_RE = re.compile(
     r"(plain(?:text)?[-_]?demo[-_]?token[-_][A-Za-z0-9_-]{8,}|"
-    r"(?:ghp|github_pat|xoxb|sk)-[A-Za-z0-9_-]{12,}|"
+    r"(?:ghp|github_pat|xoxb|sk)[-_][A-Za-z0-9_-]{12,}|"
     r"AKIA[A-Z0-9]{12,})"
 )
 SAFE_REFERENCE_RE = re.compile(r"^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|op://.+|<redacted>|\*+)$")

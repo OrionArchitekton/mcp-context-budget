@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import tempfile
@@ -65,7 +66,10 @@ def _relative_or_absolute(path: Path, *, base: Path) -> str:
 
 def _safe_tools_filename(server: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", server).strip(".-")
-    return f"{cleaned or 'server'}.tools.json"
+    # Distinct server names can sanitize to the same cleaned string; append a
+    # short hash of the original name so materialized sidecars never collide.
+    digest = hashlib.sha256(server.encode("utf-8")).hexdigest()[:8]
+    return f"{cleaned or 'server'}-{digest}.tools.json"
 
 
 def _tools_payload_from_live(raw_tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -203,14 +207,25 @@ def build_config_patch(
                 if not materialize_root.is_absolute():
                     materialize_root = config_path.parent / materialize_root
                 tools_path = materialize_root / _safe_tools_filename(str(server))
-                live = introspect_server_tools(
-                    server=str(server),
-                    command=raw.get("command"),
-                    args=raw.get("args") if isinstance(raw.get("args"), list) else [],
-                    env=raw.get("env"),
-                    start_timeout_seconds=start_timeout_seconds,
-                    max_stdio_bytes=max_stdio_bytes,
-                )
+                try:
+                    live = introspect_server_tools(
+                        server=str(server),
+                        command=raw.get("command"),
+                        args=raw.get("args") if isinstance(raw.get("args"), list) else [],
+                        env=raw.get("env"),
+                        start_timeout_seconds=start_timeout_seconds,
+                        max_stdio_bytes=max_stdio_bytes,
+                    )
+                except ValueError as exc:
+                    # Keep the failure in the per-server report rather than aborting
+                    # the whole apply: one unreachable server must not sink the run.
+                    not_patchable.append(
+                        {
+                            "server": str(server),
+                            "reason": f"live introspection failed: {exc}",
+                        }
+                    )
+                    continue
                 ext_payload = _tools_payload_from_live(live.tools)
                 ext_actions = _disable_unselected(
                     ext_payload["tools"], str(server), selected_tools, str(tools_path)
@@ -228,7 +243,11 @@ def build_config_patch(
                 external_patches.append(
                     {
                         "path": tools_path,
-                        "before_text": None,
+                        # Preserve any existing sidecar so --write backs it up
+                        # before overwriting (never clobber without a backup).
+                        "before_text": (
+                            tools_path.read_text(encoding="utf-8") if tools_path.exists() else None
+                        ),
                         "payload": ext_payload,
                         "actions": len(ext_actions),
                         "materialized": True,
@@ -288,6 +307,14 @@ def apply_config_selection(
     except ValueError as exc:
         target_records = []
         target_load_error = str(exc)
+    if target_load_error is not None and not allow_fingerprint_mismatch:
+        # Fail closed: if the target config cannot be loaded we cannot verify the
+        # lock<->config binding, so refuse rather than patch a config we could not
+        # parse (proceeding would treat it as having no tools and disable blindly).
+        raise ValueError(
+            f"cannot verify the lock against this config: {target_load_error}; "
+            "fix the config or pass --allow-fingerprint-mismatch to override"
+        )
     target_ids = {record.tool_id for record in target_records}
     target_fingerprint = fingerprint_tool_ids(target_ids)
     lock_fingerprint = lock_payload.get("config_fingerprint")

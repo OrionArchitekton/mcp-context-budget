@@ -155,7 +155,11 @@ def test_allow_start_materializes_command_discovered_server(tmp_path: Path) -> N
     assert report["not_patchable"] == []
     assert report["external_targets"]
     payload = json.loads(cfg.read_text(encoding="utf-8"))
-    assert payload["mcpServers"]["fixture"]["toolsListPath"] == "materialized/fixture.tools.json"
+    # Materialized sidecar names carry a short hash of the server name for
+    # collision-resistance: assert the pattern, not the exact (brittle) digest.
+    materialized = payload["mcpServers"]["fixture"]["toolsListPath"]
+    assert materialized.startswith("materialized/fixture-")
+    assert materialized.endswith(".tools.json")
     remaining = {r.tool_id for r in load_mcp_config(cfg, allow_start=False)[0]}
     assert remaining == {"fixture/safe_read"}
 
