@@ -202,7 +202,7 @@ def introspect_server_tools(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=sys.stderr,
             env=child_env,
             shell=False,
         )
