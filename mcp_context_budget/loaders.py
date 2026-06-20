@@ -144,9 +144,11 @@ def load_mcp_config(
                 max_stdio_bytes=max_stdio_bytes,
             )
             manifest["servers"][name]["live_tools_listed"] = len(live.tools)
-            records.extend(
-                _tool_from_payload(str(name), tool) for tool in live.tools if is_enabled(tool)
-            )
+            # Live tools are real, callable tools reported by the running server.
+            # `is_enabled` is a user-CONFIG control, not a field we honor from a
+            # server's own payload — a server setting enabled:false on a live tool
+            # must not let it hide from the budget while staying callable.
+            records.extend(_tool_from_payload(str(name), tool) for tool in live.tools)
     return records, manifest
 
 

@@ -35,9 +35,13 @@ class _ByteBudget:
 def redact_text(text: str, env: object) -> str:
     redacted = text
     if isinstance(env, dict):
-        for value in env.values():
-            if isinstance(value, str) and value:
-                redacted = redacted.replace(value, REDACTION)
+        # Replace longer values first: a secret that is a substring of another
+        # must not survive as a partial leak after the longer one is redacted.
+        values = sorted(
+            (v for v in env.values() if isinstance(v, str) and v), key=len, reverse=True
+        )
+        for value in values:
+            redacted = redacted.replace(value, REDACTION)
     return redacted
 
 
@@ -254,7 +258,12 @@ def introspect_server_tools(
             raw_tools = result.get("tools")
             if not isinstance(raw_tools, list):
                 raise ValueError("MCP tools/list result missing tools array")
-            tools.extend(tool for tool in raw_tools if isinstance(tool, dict))
+            # Fail closed: a non-object entry means the server's listing is
+            # malformed; silently dropping it could hide a real tool from the budget.
+            for tool in raw_tools:
+                if not isinstance(tool, dict):
+                    raise ValueError("MCP tools/list returned a non-object tool entry")
+            tools.extend(raw_tools)
             next_cursor = result.get("nextCursor")
             if not isinstance(next_cursor, str) or not next_cursor:
                 break
