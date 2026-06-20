@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 - 2026-06-20
+
+- Add opt-in `--allow-start` local stdio introspection for command-discovered
+  MCP servers. The harness is timeout-bounded, byte-bounded, stdlib-only, and
+  fixture-proven; it lists tools through MCP `tools/list` without becoming a
+  proxy, gateway, service, browser UI, org scanner, or hosted dashboard.
+- Extend `config-apply` with `--allow-start` and `--materialize-tools-list` so a
+  previously `not_patchable` command-discovered server can be materialized to a
+  local `toolsListPath` sidecar and then enforced on later static scans.
+- Add `config-audit` and `config-audit-demo` for read-only MCP config secret
+  hygiene. Reports include path/class/length/fingerprint metadata only and never
+  print literal secret values.
+- Add `config-multiserver-demo` and tests for explicit multi-server
+  `{servers:[...]}` external catalog patching and fail-closed malformed-shape
+  reporting.
+- Keep the core package dependency-free and local-first.
+
 ## 0.2.0 - 2026-06-19
 
 - Add `semantic-select` and `semantic-demo` for deterministic fixture-backed

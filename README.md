@@ -15,11 +15,15 @@ developers a repeatable budget gate:
 - fail builds when schema or response budgets regress
 - compress recorded response fixtures under a response budget
 - apply selected-tool locks back to caller-owned MCP config files
+- opt into local stdio `tools/list` introspection for command-discovered servers
+- audit MCP configs for plaintext secret exposure without printing values
 - prove the spine with a Docker demo
 
 No private Orion services are required. The core CLI has no external runtime
 service dependency. Semantic selection can optionally call Ollama only when the
-`--embedding-backend ollama` flag is explicitly selected.
+`--embedding-backend ollama` flag is explicitly selected. Live stdio
+introspection can optionally start a caller-owned local MCP command only when
+`--allow-start` is explicitly selected.
 
 ## Install
 
@@ -60,6 +64,7 @@ mcp-context-budget semantic-select --tool-list fixtures/demo-tools.json --task "
 mcp-context-budget check --lock mcp-budget.lock.json --max-schema-tokens 6000 --max-response-tokens 4000
 mcp-context-budget compress-responses --fixtures responses/ --max-response-tokens 4000 --out-dir compressed-responses --report compression-report.json
 mcp-context-budget config-apply --config mcp.json --lock mcp-budget.lock.json --dry-run --patch-out mcp-config.patch.json
+mcp-context-budget config-audit --config mcp.json --json-out mcp-config-audit.json --fail-on high
 mcp-context-budget export --lock mcp-budget.lock.json --format sarif --out mcp-budget.sarif
 ```
 
@@ -67,10 +72,29 @@ mcp-context-budget export --lock mcp-budget.lock.json --format sarif --out mcp-b
 object. Server entries may include `toolsListPath` to point at a recorded
 `tools/list` JSON fixture. Environment values are redacted in reports.
 
-`--allow-start` is intentionally conservative. The tool prints the exact
-stdio command that would be started, with environment values redacted, and
-refuses live process startup unless future work adds a hardened MCP
-transport harness.
+`--allow-start` is intentionally conservative. It is never implied by default,
+never required for static `toolsListPath` or inline-tool configs, and never
+starts a hosted service. When explicitly selected, the tool starts the
+caller-owned local stdio command as argv with `shell=False`, sends MCP
+`initialize` and `tools/list`, enforces timeout and stdio-byte caps, redacts env
+metadata, and exits the process after listing tools.
+
+For command-discovered servers that need to become enforceable by
+`config-apply`, combine `--allow-start` with `--materialize-tools-list`:
+
+```bash
+mcp-context-budget config-apply \
+  --config mcp.json \
+  --lock mcp-budget.lock.json \
+  --write \
+  --allow-start \
+  --start-timeout-seconds 2 \
+  --max-stdio-bytes 65536 \
+  --materialize-tools-list materialized-tools/
+```
+
+This writes a local `toolsListPath` sidecar for the discovered tools, applies
+the selected-tool lock there, and leaves later `scan`/`select` runs static again.
 
 ### Semantic Selection
 
@@ -160,8 +184,29 @@ The apply contract is enforced, not advisory:
 - **Honest status, never a false PASS.** A command-discovered server (no inline
   `tools`, no `toolsListPath`) cannot be enforced without live startup, so it is
   reported under `not_patchable` and the status is `PARTIAL`, not `PASS`.
+- **Opt-in materialization closes the PARTIAL gap.** With `--allow-start` and
+  `--materialize-tools-list`, command-discovered tools are listed through local
+  stdio, saved to a caller-owned sidecar, and enforced as a normal
+  `toolsListPath` catalog.
 - **Disabling takes effect.** The loader honors `enabled: false`, so a disabled
   tool (or server) drops out of the budget on the next `scan`/`select`.
+
+### Config Secret Audit
+
+`config-audit` is a read-only hygiene check for MCP config files. It flags
+high-confidence literal secrets in env values, args, and nested config fields,
+while treating `${TOKEN}` references, `op://...` references, and redacted
+placeholders as safe references.
+
+```bash
+mcp-context-budget config-audit \
+  --config mcp.json \
+  --json-out mcp-config-audit.json \
+  --fail-on high
+```
+
+Reports include the config path, finding path, severity, secret class, length
+bucket, and a short fingerprint. Literal secret values are never printed.
 
 ## Docker
 
@@ -185,13 +230,33 @@ docker run --rm mcp-context-budget:local semantic-demo \
   --max-schema-tokens 3000
 docker run --rm mcp-context-budget:local compress-demo --max-response-tokens 4000
 docker run --rm mcp-context-budget:local config-demo
+docker run --rm mcp-context-budget:local allow-start-demo --start-timeout-seconds 2 --max-stdio-bytes 65536
+docker run --rm mcp-context-budget:local config-audit-demo
+docker run --rm mcp-context-budget:local config-multiserver-demo
 ```
 
-## Deferred to v0.3
+Expected v0.3 proof lines:
+
+```text
+LIVE_INTROSPECTION_STATUS=PASS
+AFTER_CONFIG_NOT_PATCHABLE=0
+CONFIG_AUDIT_STATUS=PASS
+CONFIG_AUDIT_SECRET_VALUES_REDACTED=true
+CONFIG_MULTISERVER_STATUS=PASS
+```
+
+## Out of v0.3
+
+### Locked Out
 
 - Live runtime MCP proxy/gateway that intercepts and routes actual tool calls.
 - Browser UI.
 - Organization-wide background scanner.
 - Vendor-specific hosted dashboards.
-- Secret scanning beyond redaction and no-print checks.
+
+These are not v0.4 commitments; they break the local-first CLI verifier shape.
+
+### Deferred to v0.4
+
 - Automatic response compression for arbitrary live MCP servers.
+- Parallelized Ollama embeddings and broader CLI polish.

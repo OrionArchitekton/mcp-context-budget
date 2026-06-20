@@ -127,3 +127,14 @@ def test_config_demo_prints_safe_apply_proof() -> None:
     assert int(lines["CONFIG_NOT_PATCHABLE"]) >= 1
     assert lines["CONFIG_ENFORCED_ON_RESCAN"] == "true"
     assert lines["CONFIG_APPLY_STATUS"] == "PARTIAL"
+
+
+def test_config_multiserver_demo_prints_proof() -> None:
+    result = run_cli("config-multiserver-demo")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert int(lines["CONFIG_MULTISERVER_EXTERNAL_PATCHED"]) >= 1
+    assert int(lines["CONFIG_MULTISERVER_ACTIONS"]) >= 2
+    assert lines["CONFIG_MULTISERVER_RESCAN_ENFORCED"] == "true"
+    assert lines["CONFIG_MULTISERVER_STATUS"] == "PASS"
