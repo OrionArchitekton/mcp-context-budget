@@ -16,7 +16,7 @@ TOKEN_VALUE_RE = re.compile(
     r"(?:ghp|github_pat|xoxb|sk)-[A-Za-z0-9_-]{12,}|"
     r"AKIA[A-Z0-9]{12,})"
 )
-SAFE_REFERENCE_RE = re.compile(r"^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|op://.+|<redacted>|\\*+)$")
+SAFE_REFERENCE_RE = re.compile(r"^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|op://.+|<redacted>|\*+)$")
 
 
 @dataclass(frozen=True)
