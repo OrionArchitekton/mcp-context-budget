@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -115,6 +116,93 @@ def test_command_discovered_server_is_partial_not_false_pass(tmp_path: Path) -> 
     report = apply_config_selection(config_path=cfg, lock_path=lock, write=False)
     assert report["status"] == "PARTIAL"  # NOT a false PASS
     assert any(item["server"] == "shell" for item in report["not_patchable"])
+
+
+def test_allow_start_materializes_command_discovered_server(tmp_path: Path) -> None:
+    cfg = tmp_path / "mcp.json"
+    _write(
+        cfg,
+        {
+            "mcpServers": {
+                "fixture": {
+                    "command": sys.executable,
+                    "args": ["-m", "mcp_context_budget", "_fixture-mcp-server"],
+                }
+            }
+        },
+    )
+    records, _ = load_mcp_config(cfg, allow_start=True, start_timeout_seconds=2)
+    lock = tmp_path / "lock.json"
+    _write(
+        lock,
+        {
+            "selected_tools": ["fixture/safe_read"],
+            "config_fingerprint": fingerprint_tool_ids(r.tool_id for r in records),
+        },
+    )
+
+    report = apply_config_selection(
+        config_path=cfg,
+        lock_path=lock,
+        write=True,
+        backup_dir=tmp_path / "backups",
+        allow_start=True,
+        start_timeout_seconds=2,
+        materialize_tools_list=tmp_path / "materialized",
+    )
+
+    assert report["status"] == "PASS"
+    assert report["not_patchable"] == []
+    assert report["external_targets"]
+    payload = json.loads(cfg.read_text(encoding="utf-8"))
+    assert payload["mcpServers"]["fixture"]["toolsListPath"] == "materialized/fixture.tools.json"
+    remaining = {r.tool_id for r in load_mcp_config(cfg, allow_start=False)[0]}
+    assert remaining == {"fixture/safe_read"}
+
+
+def test_multiserver_toolslistpath_catalog_is_patched(tmp_path: Path) -> None:
+    ext = tmp_path / "catalog.tools.json"
+    _write(
+        ext,
+        {
+            "servers": [
+                {"name": "github", "tools": [{"name": "get"}, {"name": "delete"}]},
+                {"name": "linear", "tools": [{"name": "create"}, {"name": "bulk_delete"}]},
+            ]
+        },
+    )
+    cfg = tmp_path / "mcp.json"
+    _write(cfg, {"mcpServers": {"catalog": {"command": "x", "toolsListPath": ext.name}}})
+    lock = tmp_path / "lock.json"
+    _write(lock, _bound_lock(cfg, ["github/get", "linear/create"]))
+
+    report = apply_config_selection(
+        config_path=cfg, lock_path=lock, write=True, backup_dir=tmp_path / "backups"
+    )
+
+    assert report["status"] == "PASS"
+    assert report["action_counts_by_server"] == {"github": 1, "linear": 1}
+    remaining = {r.tool_id for r in load_mcp_config(cfg)[0]}
+    assert remaining == {"github/get", "linear/create"}
+
+
+def test_multiserver_toolslistpath_bad_shape_is_partial(tmp_path: Path) -> None:
+    ext = tmp_path / "catalog.tools.json"
+    _write(ext, {"servers": [{"name": "github", "not_tools": []}]})
+    cfg = tmp_path / "mcp.json"
+    _write(cfg, {"mcpServers": {"catalog": {"command": "x", "toolsListPath": ext.name}}})
+    lock = tmp_path / "lock.json"
+    _write(lock, {"selected_tools": ["github/get"]})
+
+    report = apply_config_selection(
+        config_path=cfg,
+        lock_path=lock,
+        write=False,
+        allow_fingerprint_mismatch=True,
+    )
+
+    assert report["status"] == "PARTIAL"
+    assert "unpatchable shape" in report["not_patchable"][0]["reason"]
 
 
 def test_config_demo_proves_full_contract() -> None:

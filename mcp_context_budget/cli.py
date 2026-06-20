@@ -7,8 +7,14 @@ from pathlib import Path
 
 from mcp_context_budget.budget import check_lock, load_response_fixtures, scan_records
 from mcp_context_budget.compress import compress_response_fixtures, run_compress_demo
-from mcp_context_budget.config_edit import apply_config_selection, run_config_demo
+from mcp_context_budget.config_audit import audit_config, run_config_audit_demo, should_fail
+from mcp_context_budget.config_edit import (
+    apply_config_selection,
+    run_config_demo,
+    run_config_multiserver_demo,
+)
 from mcp_context_budget.demo import run_demo
+from mcp_context_budget.live_stdio import run_allow_start_demo, run_fixture_mcp_server
 from mcp_context_budget.loaders import load_records
 from mcp_context_budget.reporting import markdown_report, sarif_from_lock, write_json
 from mcp_context_budget.selector import select_tools
@@ -19,11 +25,17 @@ def _add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--tool-list", type=Path)
     parser.add_argument("--allow-start", action="store_true")
+    parser.add_argument("--start-timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--max-stdio-bytes", type=int, default=65536)
 
 
 def _records_from_args(args: argparse.Namespace):
     records, manifest = load_records(
-        tool_list=args.tool_list, config=args.config, allow_start=args.allow_start
+        tool_list=args.tool_list,
+        config=args.config,
+        allow_start=args.allow_start,
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
     )
     return records, manifest
 
@@ -202,6 +214,10 @@ def cmd_config_apply(args: argparse.Namespace) -> int:
         backup_dir=args.backup_dir,
         patch_out=args.patch_out,
         allow_fingerprint_mismatch=args.allow_fingerprint_mismatch,
+        allow_start=args.allow_start,
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
+        materialize_tools_list=args.materialize_tools_list,
     )
     print(f"CONFIG_PATCH_ACTIONS={len(report['actions'])}")
     print(f"CONFIG_DRY_RUN_UNCHANGED={str(report['dry_run']).lower()}")
@@ -215,6 +231,65 @@ def cmd_config_apply(args: argparse.Namespace) -> int:
     # PARTIAL is an HONEST status (some servers could not be enforced), never a false PASS.
     print(f"CONFIG_APPLY_STATUS={report['status']}")
     return 0
+
+
+def cmd_config_multiserver_demo(args: argparse.Namespace) -> int:
+    result = run_config_multiserver_demo()
+    print(f"CONFIG_MULTISERVER_EXTERNAL_PATCHED={result['config_multiserver_external_patched']}")
+    print(f"CONFIG_MULTISERVER_ACTIONS={result['config_multiserver_actions']}")
+    print(
+        "CONFIG_MULTISERVER_ACTION_SERVERS=" + ",".join(result["config_multiserver_action_servers"])
+    )
+    print(
+        "CONFIG_MULTISERVER_RESCAN_ENFORCED="
+        f"{str(result['config_multiserver_rescan_enforced']).lower()}"
+    )
+    print(f"CONFIG_MULTISERVER_STATUS={result['config_multiserver_status']}")
+    return 0 if result["config_multiserver_status"] == "PASS" else 1
+
+
+def cmd_config_audit(args: argparse.Namespace) -> int:
+    report = audit_config(args.config)
+    if args.json_out:
+        write_json(args.json_out, report)
+    print(f"CONFIG_AUDIT_FINDINGS={report['counts']['total']}")
+    print(f"CONFIG_AUDIT_HIGH={report['counts']['high']}")
+    print(f"CONFIG_AUDIT_STATUS={'FAIL' if should_fail(report, args.fail_on) else 'PASS'}")
+    return 1 if should_fail(report, args.fail_on) else 0
+
+
+def cmd_config_audit_demo(args: argparse.Namespace) -> int:
+    result = run_config_audit_demo()
+    print(f"CONFIG_AUDIT_FINDINGS={result['config_audit_findings']}")
+    print(f"CONFIG_AUDIT_HIGH={result['config_audit_high']}")
+    print(
+        "CONFIG_AUDIT_SECRET_VALUES_REDACTED="
+        f"{str(result['config_audit_secret_values_redacted']).lower()}"
+    )
+    print(
+        "CONFIG_AUDIT_SAFE_REFERENCE_IGNORED="
+        f"{str(result['config_audit_safe_reference_ignored']).lower()}"
+    )
+    print(f"CONFIG_AUDIT_STATUS={result['config_audit_status']}")
+    return 0 if result["config_audit_status"] == "PASS" else 1
+
+
+def cmd_allow_start_demo(args: argparse.Namespace) -> int:
+    result = run_allow_start_demo(
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
+    )
+    print("ALLOW_START_FIXTURE_SERVER=started")
+    print(f"BEFORE_CONFIG_NOT_PATCHABLE={result['before_config_not_patchable']}")
+    print(f"LIVE_TOOLS_LISTED={result['live_tools_listed']}")
+    print(f"MATERIALIZED_TOOL_LIST={str(result['materialized_tool_list']).lower()}")
+    print(f"AFTER_CONFIG_NOT_PATCHABLE={result['after_config_not_patchable']}")
+    print(f"LIVE_INTROSPECTION_STATUS={result['live_introspection_status']}")
+    return 0 if result["live_introspection_status"] == "PASS" else 1
+
+
+def cmd_fixture_mcp_server(args: argparse.Namespace) -> int:
+    return run_fixture_mcp_server(mode=args.mode)
 
 
 def cmd_config_demo(args: argparse.Namespace) -> int:
@@ -336,14 +411,46 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="apply even if the lock's config_fingerprint does not match this config (unsafe)",
     )
+    config_apply.add_argument("--allow-start", action="store_true")
+    config_apply.add_argument("--start-timeout-seconds", type=float, default=5.0)
+    config_apply.add_argument("--max-stdio-bytes", type=int, default=65536)
+    config_apply.add_argument("--materialize-tools-list", type=Path)
     config_apply.set_defaults(func=cmd_config_apply)
 
     config_demo = sub.add_parser("config-demo")
     config_demo.set_defaults(func=cmd_config_demo)
+
+    config_multiserver_demo = sub.add_parser("config-multiserver-demo")
+    config_multiserver_demo.set_defaults(func=cmd_config_multiserver_demo)
+
+    config_audit = sub.add_parser("config-audit")
+    config_audit.add_argument("--config", type=Path, required=True)
+    config_audit.add_argument("--json-out", type=Path)
+    config_audit.add_argument("--fail-on", choices=("high", "any", "none"), default="high")
+    config_audit.set_defaults(func=cmd_config_audit)
+
+    config_audit_demo = sub.add_parser("config-audit-demo")
+    config_audit_demo.set_defaults(func=cmd_config_audit_demo)
+
+    allow_start_demo = sub.add_parser("allow-start-demo")
+    allow_start_demo.add_argument("--start-timeout-seconds", type=float, default=2.0)
+    allow_start_demo.add_argument("--max-stdio-bytes", type=int, default=65536)
+    allow_start_demo.set_defaults(func=cmd_allow_start_demo)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "_fixture-mcp-server":
+        parser = argparse.ArgumentParser(prog="mcp-context-budget _fixture-mcp-server")
+        parser.add_argument(
+            "--mode",
+            choices=("ok", "hang", "garbage", "exit-before-tools", "stderr-secret", "large"),
+            default="ok",
+        )
+        return cmd_fixture_mcp_server(parser.parse_args(argv[1:]))
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

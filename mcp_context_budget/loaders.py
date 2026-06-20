@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from mcp_context_budget.live_stdio import introspect_server_tools
 from mcp_context_budget.models import ToolRecord
 
 REDACTION = "<redacted>"
@@ -47,6 +48,8 @@ def _server_items(payload: Any, *, default_server: str = "default") -> list[tupl
             tools = server.get("tools")
             if isinstance(tools, list):
                 items.append((name, tools))
+        if not items:
+            raise ValueError("tool list JSON must contain `servers[].tools`")
         return items
     tools = payload.get("tools")
     if isinstance(tools, list):
@@ -90,7 +93,11 @@ def load_tool_list(path: Path, *, default_server: str = "default") -> list[ToolR
 
 
 def load_mcp_config(
-    path: Path, *, allow_start: bool = False
+    path: Path,
+    *,
+    allow_start: bool = False,
+    start_timeout_seconds: float = 5.0,
+    max_stdio_bytes: int = 65536,
 ) -> tuple[list[ToolRecord], dict[str, Any]]:
     payload = read_json(path)
     servers = (
@@ -128,16 +135,28 @@ def load_mcp_config(
         if allow_start and not inline_tools and not tool_path:
             command = raw.get("command")
             args = raw.get("args") if isinstance(raw.get("args"), list) else []
-            rendered = " ".join([str(command), *(str(arg) for arg in args)]).strip()
-            raise NotImplementedError(
-                "safe live stdio startup is deferred to v0.2; would start: "
-                f"{rendered} with env={manifest['servers'][name]['env']}"
+            live = introspect_server_tools(
+                server=str(name),
+                command=command,
+                args=args,
+                env=raw.get("env"),
+                start_timeout_seconds=start_timeout_seconds,
+                max_stdio_bytes=max_stdio_bytes,
+            )
+            manifest["servers"][name]["live_tools_listed"] = len(live.tools)
+            records.extend(
+                _tool_from_payload(str(name), tool) for tool in live.tools if is_enabled(tool)
             )
     return records, manifest
 
 
 def load_records(
-    *, tool_list: Path | None = None, config: Path | None = None, allow_start: bool = False
+    *,
+    tool_list: Path | None = None,
+    config: Path | None = None,
+    allow_start: bool = False,
+    start_timeout_seconds: float = 5.0,
+    max_stdio_bytes: int = 65536,
 ) -> tuple[list[ToolRecord], dict[str, Any]]:
     if tool_list is None and config is None:
         raise ValueError("provide --tool-list or --config")
@@ -145,4 +164,9 @@ def load_records(
         return load_tool_list(tool_list), {"source": str(tool_list)}
     if config is None:
         raise ValueError("provide --tool-list or --config")
-    return load_mcp_config(config, allow_start=allow_start)
+    return load_mcp_config(
+        config,
+        allow_start=allow_start,
+        start_timeout_seconds=start_timeout_seconds,
+        max_stdio_bytes=max_stdio_bytes,
+    )
