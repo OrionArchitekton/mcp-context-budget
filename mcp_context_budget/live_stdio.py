@@ -190,9 +190,7 @@ def _read_json_line_message(
 ) -> dict[str, Any]:
     if process.stdout is None:
         raise ValueError("MCP server stdout is unavailable")
-    line = _read_until_newline(
-        selector, process.stdout.fileno(), deadline=deadline, budget=budget
-    )
+    line = _read_until_newline(selector, process.stdout.fileno(), deadline=deadline, budget=budget)
     try:
         payload = json.loads(line.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -211,13 +209,9 @@ def _read_message(
     framing: str,
 ) -> dict[str, Any]:
     if framing == "json-lines":
-        return _read_json_line_message(
-            process, selector, deadline=deadline, budget=budget
-        )
+        return _read_json_line_message(process, selector, deadline=deadline, budget=budget)
     if framing == "content-length":
-        return _read_content_length_message(
-            process, selector, deadline=deadline, budget=budget
-        )
+        return _read_content_length_message(process, selector, deadline=deadline, budget=budget)
     raise ValueError(f"unsupported stdio framing: {framing}")
 
 
@@ -389,12 +383,8 @@ def introspect_server_tools(
     stdio_framing: str = "auto",
 ) -> LiveToolsResult:
     if stdio_framing not in STDIO_FRAMINGS:
-        raise ValueError(
-            "--stdio-framing must be one of: " + ", ".join(STDIO_FRAMINGS)
-        )
-    attempts = (
-        ("json-lines", "content-length") if stdio_framing == "auto" else (stdio_framing,)
-    )
+        raise ValueError("--stdio-framing must be one of: " + ", ".join(STDIO_FRAMINGS))
+    attempts = ("json-lines", "content-length") if stdio_framing == "auto" else (stdio_framing,)
     failures: list[str] = []
     for framing in attempts:
         try:

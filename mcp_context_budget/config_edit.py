@@ -217,9 +217,7 @@ def build_config_patch(
                         env=raw.get("env"),
                         start_timeout_seconds=start_timeout_seconds,
                         max_stdio_bytes=max_stdio_bytes,
-                        stdio_framing=stdio_framing_for_server(
-                            raw, default=stdio_framing
-                        ),
+                        stdio_framing=stdio_framing_for_server(raw, default=stdio_framing),
                     )
                 except ValueError as exc:
                     # Keep the failure in the per-server report rather than aborting
