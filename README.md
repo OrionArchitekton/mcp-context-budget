@@ -70,14 +70,19 @@ mcp-context-budget export --lock mcp-budget.lock.json --format sarif --out mcp-b
 
 `scan --config` supports Claude/Cursor/Codex-style JSON with an `mcpServers`
 object. Server entries may include `toolsListPath` to point at a recorded
-`tools/list` JSON fixture. Environment values are redacted in reports.
+`tools/list` JSON fixture. Server entries may also include `stdioFraming`
+(`auto`, `json-lines`, or `content-length`) when a local stdio server needs a
+fixed transport framing. Environment values are redacted in reports.
 
 `--allow-start` is intentionally conservative. It is never implied by default,
 never required for static `toolsListPath` or inline-tool configs, and never
 starts a hosted service. When explicitly selected, the tool starts the
 caller-owned local stdio command as argv with `shell=False`, sends MCP
 `initialize` and `tools/list`, enforces timeout and stdio-byte caps, redacts env
-metadata, and exits the process after listing tools.
+metadata, and exits the process after listing tools. The default
+`--stdio-framing auto` prefers the current MCP SDK JSON-lines stdio transport
+and falls back to the legacy `Content-Length` fixture transport; pass
+`--stdio-framing json-lines` or `--stdio-framing content-length` to force one.
 
 For command-discovered servers that need to become enforceable by
 `config-apply`, combine `--allow-start` with `--materialize-tools-list`:
@@ -90,6 +95,7 @@ mcp-context-budget config-apply \
   --allow-start \
   --start-timeout-seconds 2 \
   --max-stdio-bytes 65536 \
+  --stdio-framing auto \
   --materialize-tools-list materialized-tools/
 ```
 
