@@ -8,6 +8,7 @@ from mcp_context_budget.live_stdio import introspect_server_tools
 from mcp_context_budget.models import ToolRecord
 
 REDACTION = "<redacted>"
+STDIO_FRAMING_KEYS = ("stdioFraming", "stdio_framing", "stdio-framing")
 
 
 def read_json(path: Path) -> Any:
@@ -32,6 +33,14 @@ def is_enabled(raw: object) -> bool:
     the usual structural error rather than being silently skipped.
     """
     return not (isinstance(raw, dict) and raw.get("enabled") is False)
+
+
+def stdio_framing_for_server(raw: dict[str, Any], *, default: str = "auto") -> str:
+    for key in STDIO_FRAMING_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return default
 
 
 def _server_items(payload: Any, *, default_server: str = "default") -> list[tuple[str, list[Any]]]:
@@ -98,6 +107,7 @@ def load_mcp_config(
     allow_start: bool = False,
     start_timeout_seconds: float = 5.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
 ) -> tuple[list[ToolRecord], dict[str, Any]]:
     payload = read_json(path)
     servers = (
@@ -110,11 +120,13 @@ def load_mcp_config(
     for name, raw in sorted(servers.items()):
         if not isinstance(raw, dict):
             continue
+        server_stdio_framing = stdio_framing_for_server(raw, default=stdio_framing)
         manifest["servers"][name] = {
             "command": raw.get("command"),
             "args": raw.get("args") if isinstance(raw.get("args"), list) else [],
             "env": redact_env(raw.get("env")),
             "allow_start": allow_start,
+            "stdio_framing": server_stdio_framing,
         }
         if raw.get("enabled") is False:
             manifest["servers"][name]["disabled"] = True
@@ -142,6 +154,7 @@ def load_mcp_config(
                 env=raw.get("env"),
                 start_timeout_seconds=start_timeout_seconds,
                 max_stdio_bytes=max_stdio_bytes,
+                stdio_framing=server_stdio_framing,
             )
             manifest["servers"][name]["live_tools_listed"] = len(live.tools)
             # Live tools are real, callable tools reported by the running server.
@@ -159,6 +172,7 @@ def load_records(
     allow_start: bool = False,
     start_timeout_seconds: float = 5.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
 ) -> tuple[list[ToolRecord], dict[str, Any]]:
     if tool_list is None and config is None:
         raise ValueError("provide --tool-list or --config")
@@ -171,4 +185,5 @@ def load_records(
         allow_start=allow_start,
         start_timeout_seconds=start_timeout_seconds,
         max_stdio_bytes=max_stdio_bytes,
+        stdio_framing=stdio_framing,
     )

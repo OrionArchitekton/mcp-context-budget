@@ -15,6 +15,7 @@ from mcp_context_budget.loaders import (
     load_mcp_config,
     read_json,
     redact_env,
+    stdio_framing_for_server,
 )
 from mcp_context_budget.models import fingerprint_tool_ids
 
@@ -139,6 +140,7 @@ def build_config_patch(
     allow_start: bool = False,
     start_timeout_seconds: float = 5.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
     materialize_tools_list: Path | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]], list[dict[str, Any]], list[dict[str, str]]]:
     """Plan the disable-unselected patch across inline tools AND toolsListPath files.
@@ -215,6 +217,7 @@ def build_config_patch(
                         env=raw.get("env"),
                         start_timeout_seconds=start_timeout_seconds,
                         max_stdio_bytes=max_stdio_bytes,
+                        stdio_framing=stdio_framing_for_server(raw, default=stdio_framing),
                     )
                 except ValueError as exc:
                     # Keep the failure in the per-server report rather than aborting
@@ -285,6 +288,7 @@ def apply_config_selection(
     allow_start: bool = False,
     start_timeout_seconds: float = 5.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
     materialize_tools_list: Path | None = None,
 ) -> dict[str, Any]:
     before_text = config_path.read_text(encoding="utf-8")
@@ -302,6 +306,7 @@ def apply_config_selection(
             allow_start=allow_start,
             start_timeout_seconds=start_timeout_seconds,
             max_stdio_bytes=max_stdio_bytes,
+            stdio_framing=stdio_framing,
         )
         target_load_error = None
     except ValueError as exc:
@@ -350,6 +355,7 @@ def apply_config_selection(
         allow_start=allow_start,
         start_timeout_seconds=start_timeout_seconds,
         max_stdio_bytes=max_stdio_bytes,
+        stdio_framing=stdio_framing,
         materialize_tools_list=materialize_tools_list,
     )
     servers = _mcp_servers(payload)

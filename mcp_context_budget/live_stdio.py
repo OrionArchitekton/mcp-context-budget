@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 REDACTION = "<redacted>"
+STDIO_FRAMINGS = ("auto", "json-lines", "content-length")
 
 
 @dataclass(frozen=True)
@@ -45,15 +46,21 @@ def redact_text(text: str, env: object) -> str:
     return redacted
 
 
-def _message_bytes(payload: dict[str, Any]) -> bytes:
+def _message_bytes(payload: dict[str, Any], *, framing: str) -> bytes:
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    if framing == "json-lines":
+        return body + b"\n"
+    if framing != "content-length":
+        raise ValueError(f"unsupported stdio framing: {framing}")
     return b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
 
 
-def _write_message(process: subprocess.Popen[bytes], payload: dict[str, Any]) -> None:
+def _write_message(
+    process: subprocess.Popen[bytes], payload: dict[str, Any], *, framing: str
+) -> None:
     if process.stdin is None:
         raise ValueError("MCP server stdin is unavailable")
-    process.stdin.write(_message_bytes(payload))
+    process.stdin.write(_message_bytes(payload, framing=framing))
     process.stdin.flush()
 
 
@@ -108,7 +115,30 @@ def _read_until_header_end(
     return bytes(header)
 
 
-def _read_message(
+def _read_until_newline(
+    selector: selectors.BaseSelector,
+    fd: int,
+    *,
+    deadline: float,
+    budget: _ByteBudget,
+) -> bytes:
+    line = bytearray()
+    while b"\n" not in line:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError("timed out waiting for MCP response line")
+        events = selector.select(timeout)
+        if not events:
+            raise TimeoutError("timed out waiting for MCP response line")
+        chunk = os.read(fd, 1)
+        if not chunk:
+            raise ValueError("MCP server exited before sending a complete response")
+        line.extend(chunk)
+        budget.add(len(chunk))
+    return bytes(line)
+
+
+def _read_content_length_message(
     process: subprocess.Popen[bytes],
     selector: selectors.BaseSelector,
     *,
@@ -151,6 +181,40 @@ def _read_message(
     return payload
 
 
+def _read_json_line_message(
+    process: subprocess.Popen[bytes],
+    selector: selectors.BaseSelector,
+    *,
+    deadline: float,
+    budget: _ByteBudget,
+) -> dict[str, Any]:
+    if process.stdout is None:
+        raise ValueError("MCP server stdout is unavailable")
+    line = _read_until_newline(selector, process.stdout.fileno(), deadline=deadline, budget=budget)
+    try:
+        payload = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("MCP response line is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("MCP response line is not a JSON object")
+    return payload
+
+
+def _read_message(
+    process: subprocess.Popen[bytes],
+    selector: selectors.BaseSelector,
+    *,
+    deadline: float,
+    budget: _ByteBudget,
+    framing: str,
+) -> dict[str, Any]:
+    if framing == "json-lines":
+        return _read_json_line_message(process, selector, deadline=deadline, budget=budget)
+    if framing == "content-length":
+        return _read_content_length_message(process, selector, deadline=deadline, budget=budget)
+    raise ValueError(f"unsupported stdio framing: {framing}")
+
+
 def _read_response(
     process: subprocess.Popen[bytes],
     selector: selectors.BaseSelector,
@@ -158,9 +222,12 @@ def _read_response(
     expected_id: int,
     deadline: float,
     budget: _ByteBudget,
+    framing: str,
 ) -> dict[str, Any]:
     while True:
-        payload = _read_message(process, selector, deadline=deadline, budget=budget)
+        payload = _read_message(
+            process, selector, deadline=deadline, budget=budget, framing=framing
+        )
         if payload.get("id") != expected_id:
             continue
         if "error" in payload:
@@ -182,7 +249,7 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=1)
 
 
-def introspect_server_tools(
+def _introspect_server_tools_once(
     *,
     server: str,
     command: object,
@@ -190,6 +257,7 @@ def introspect_server_tools(
     env: object,
     start_timeout_seconds: float = 5.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str,
 ) -> LiveToolsResult:
     if not isinstance(command, str) or not command:
         raise ValueError(f"server {server} cannot be started: command is missing")
@@ -235,11 +303,20 @@ def introspect_server_tools(
                     "clientInfo": {"name": "mcp-context-budget", "version": "0.3.0"},
                 },
             },
+            framing=stdio_framing,
         )
-        _read_response(process, selector, expected_id=1, deadline=deadline, budget=budget)
+        _read_response(
+            process,
+            selector,
+            expected_id=1,
+            deadline=deadline,
+            budget=budget,
+            framing=stdio_framing,
+        )
         _write_message(
             process,
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            framing=stdio_framing,
         )
         tools: list[dict[str, Any]] = []
         cursor: str | None = None
@@ -251,9 +328,15 @@ def introspect_server_tools(
             _write_message(
                 process,
                 {"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": params},
+                framing=stdio_framing,
             )
             result = _read_response(
-                process, selector, expected_id=request_id, deadline=deadline, budget=budget
+                process,
+                selector,
+                expected_id=request_id,
+                deadline=deadline,
+                budget=budget,
+                framing=stdio_framing,
             )
             raw_tools = result.get("tools")
             if not isinstance(raw_tools, list):
@@ -289,6 +372,38 @@ def introspect_server_tools(
             sys.stderr.flush()
 
 
+def introspect_server_tools(
+    *,
+    server: str,
+    command: object,
+    args: object,
+    env: object,
+    start_timeout_seconds: float = 5.0,
+    max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
+) -> LiveToolsResult:
+    if stdio_framing not in STDIO_FRAMINGS:
+        raise ValueError("--stdio-framing must be one of: " + ", ".join(STDIO_FRAMINGS))
+    attempts = ("json-lines", "content-length") if stdio_framing == "auto" else (stdio_framing,)
+    failures: list[str] = []
+    for framing in attempts:
+        try:
+            return _introspect_server_tools_once(
+                server=server,
+                command=command,
+                args=args,
+                env=env,
+                start_timeout_seconds=start_timeout_seconds,
+                max_stdio_bytes=max_stdio_bytes,
+                stdio_framing=framing,
+            )
+        except ValueError as exc:
+            failures.append(f"{framing}: {exc}")
+    if len(failures) == 1:
+        raise ValueError(failures[0])
+    raise ValueError("live stdio introspection failed for all framings: " + "; ".join(failures))
+
+
 def run_fixture_mcp_server(*, mode: str = "ok") -> int:
     if mode == "hang":
         time.sleep(60)
@@ -298,7 +413,9 @@ def run_fixture_mcp_server(*, mode: str = "ok") -> int:
         sys.stdout.buffer.flush()
         return 0
 
-    def read_one() -> dict[str, Any] | None:
+    framing = "content-length" if mode == "content-length" else "json-lines"
+
+    def read_content_length_message() -> dict[str, Any] | None:
         header = b""
         while b"\r\n\r\n" not in header:
             byte = sys.stdin.buffer.read(1)
@@ -314,8 +431,19 @@ def run_fixture_mcp_server(*, mode: str = "ok") -> int:
         body = body_prefix + sys.stdin.buffer.read(length - len(body_prefix))
         return json.loads(body.decode("utf-8"))
 
+    def read_json_line_message() -> dict[str, Any] | None:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        return json.loads(line.decode("utf-8"))
+
+    def read_one() -> dict[str, Any] | None:
+        if framing == "content-length":
+            return read_content_length_message()
+        return read_json_line_message()
+
     def send(payload: dict[str, Any]) -> None:
-        sys.stdout.buffer.write(_message_bytes(payload))
+        sys.stdout.buffer.write(_message_bytes(payload, framing=framing))
         sys.stdout.buffer.flush()
 
     tools = [

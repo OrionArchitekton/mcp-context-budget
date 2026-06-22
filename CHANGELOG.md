@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `--stdio-framing auto|json-lines|content-length` for `--allow-start`
+  introspection. Auto mode prefers the current MCP SDK JSON-lines transport
+  used by Serena and falls back to the legacy `Content-Length` fixture transport
+  without changing the local-first, timeout-bounded startup model.
+
 ## 0.3.0 - 2026-06-20
 
 - Add opt-in `--allow-start` local stdio introspection for command-discovered

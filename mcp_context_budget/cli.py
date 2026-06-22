@@ -14,7 +14,11 @@ from mcp_context_budget.config_edit import (
     run_config_multiserver_demo,
 )
 from mcp_context_budget.demo import run_demo
-from mcp_context_budget.live_stdio import run_allow_start_demo, run_fixture_mcp_server
+from mcp_context_budget.live_stdio import (
+    STDIO_FRAMINGS,
+    run_allow_start_demo,
+    run_fixture_mcp_server,
+)
 from mcp_context_budget.loaders import load_records
 from mcp_context_budget.reporting import markdown_report, sarif_from_lock, write_json
 from mcp_context_budget.selector import select_tools
@@ -27,6 +31,7 @@ def _add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-start", action="store_true")
     parser.add_argument("--start-timeout-seconds", type=float, default=5.0)
     parser.add_argument("--max-stdio-bytes", type=int, default=65536)
+    parser.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
 
 
 def _records_from_args(args: argparse.Namespace):
@@ -36,6 +41,7 @@ def _records_from_args(args: argparse.Namespace):
         allow_start=args.allow_start,
         start_timeout_seconds=args.start_timeout_seconds,
         max_stdio_bytes=args.max_stdio_bytes,
+        stdio_framing=args.stdio_framing,
     )
     return records, manifest
 
@@ -217,6 +223,7 @@ def cmd_config_apply(args: argparse.Namespace) -> int:
         allow_start=args.allow_start,
         start_timeout_seconds=args.start_timeout_seconds,
         max_stdio_bytes=args.max_stdio_bytes,
+        stdio_framing=args.stdio_framing,
         materialize_tools_list=args.materialize_tools_list,
     )
     print(f"CONFIG_PATCH_ACTIONS={len(report['actions'])}")
@@ -414,6 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_apply.add_argument("--allow-start", action="store_true")
     config_apply.add_argument("--start-timeout-seconds", type=float, default=5.0)
     config_apply.add_argument("--max-stdio-bytes", type=int, default=65536)
+    config_apply.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
     config_apply.add_argument("--materialize-tools-list", type=Path)
     config_apply.set_defaults(func=cmd_config_apply)
 
@@ -447,7 +455,15 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(prog="mcp-context-budget _fixture-mcp-server")
         parser.add_argument(
             "--mode",
-            choices=("ok", "hang", "garbage", "exit-before-tools", "stderr-secret", "large"),
+            choices=(
+                "ok",
+                "content-length",
+                "hang",
+                "garbage",
+                "exit-before-tools",
+                "stderr-secret",
+                "large",
+            ),
             default="ok",
         )
         return cmd_fixture_mcp_server(parser.parse_args(argv[1:]))

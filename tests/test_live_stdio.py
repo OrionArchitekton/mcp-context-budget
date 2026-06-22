@@ -36,6 +36,33 @@ def test_allow_start_lists_fixture_tools() -> None:
     assert {tool["name"] for tool in result.tools} == {"safe_read", "danger_delete"}
 
 
+def test_allow_start_auto_falls_back_to_content_length_fixture() -> None:
+    result = introspect_server_tools(
+        server="fixture",
+        command=sys.executable,
+        args=_fixture_args("--mode", "content-length"),
+        env={},
+        start_timeout_seconds=0.2,
+        max_stdio_bytes=65536,
+    )
+
+    assert {tool["name"] for tool in result.tools} == {"safe_read", "danger_delete"}
+
+
+def test_allow_start_explicit_content_length_fixture() -> None:
+    result = introspect_server_tools(
+        server="fixture",
+        command=sys.executable,
+        args=_fixture_args("--mode", "content-length"),
+        env={},
+        start_timeout_seconds=2,
+        max_stdio_bytes=65536,
+        stdio_framing="content-length",
+    )
+
+    assert {tool["name"] for tool in result.tools} == {"safe_read", "danger_delete"}
+
+
 def test_allow_start_times_out_hanging_server() -> None:
     with pytest.raises(ValueError, match="timed out"):
         introspect_server_tools(
