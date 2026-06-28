@@ -127,7 +127,13 @@ def test_allow_start_scan_redacts_env_even_when_server_writes_stderr(tmp_path: P
 
 
 def test_allow_start_demo_proves_materialized_enforcement() -> None:
-    result = run_cli("allow-start-demo", "--start-timeout-seconds", "2")
+    result = run_cli(
+        "allow-start-demo",
+        "--start-timeout-seconds",
+        "2",
+        "--stdio-framing",
+        "auto",
+    )
 
     assert result.returncode == 0, result.stdout + result.stderr
     lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
@@ -137,3 +143,6 @@ def test_allow_start_demo_proves_materialized_enforcement() -> None:
     assert lines["MATERIALIZED_TOOL_LIST"] == "true"
     assert lines["AFTER_CONFIG_NOT_PATCHABLE"] == "0"
     assert lines["LIVE_INTROSPECTION_STATUS"] == "PASS"
+    assert lines["STDIO_FRAMING_JSON_LINES"] == "PASS"
+    assert lines["STDIO_FRAMING_AUTO_FALLBACK"] == "PASS"
+    assert lines["STDIO_FRAMING_STATUS"] == "PASS"

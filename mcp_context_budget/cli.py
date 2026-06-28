@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 
 from mcp_context_budget.budget import check_lock, load_response_fixtures, scan_records
-from mcp_context_budget.compress import compress_response_fixtures, run_compress_demo
+from mcp_context_budget.compress import (
+    compress_response_fixtures,
+    run_compress_demo,
+    run_live_compress_demo,
+)
 from mcp_context_budget.config_audit import audit_config, run_config_audit_demo, should_fail
 from mcp_context_budget.config_edit import (
     apply_config_selection,
@@ -16,6 +20,7 @@ from mcp_context_budget.config_edit import (
 from mcp_context_budget.demo import run_demo
 from mcp_context_budget.live_stdio import (
     STDIO_FRAMINGS,
+    prove_stdio_framing,
     run_allow_start_demo,
     run_fixture_mcp_server,
 )
@@ -282,9 +287,14 @@ def cmd_config_audit_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_allow_start_demo(args: argparse.Namespace) -> int:
+    framing_proof = prove_stdio_framing(
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
+    )
     result = run_allow_start_demo(
         start_timeout_seconds=args.start_timeout_seconds,
         max_stdio_bytes=args.max_stdio_bytes,
+        stdio_framing=args.stdio_framing,
     )
     print("ALLOW_START_FIXTURE_SERVER=started")
     print(f"BEFORE_CONFIG_NOT_PATCHABLE={result['before_config_not_patchable']}")
@@ -292,7 +302,25 @@ def cmd_allow_start_demo(args: argparse.Namespace) -> int:
     print(f"MATERIALIZED_TOOL_LIST={str(result['materialized_tool_list']).lower()}")
     print(f"AFTER_CONFIG_NOT_PATCHABLE={result['after_config_not_patchable']}")
     print(f"LIVE_INTROSPECTION_STATUS={result['live_introspection_status']}")
-    return 0 if result["live_introspection_status"] == "PASS" else 1
+    print(f"STDIO_FRAMING_JSON_LINES={framing_proof['json_lines']}")
+    print(f"STDIO_FRAMING_AUTO_FALLBACK={framing_proof['auto_fallback']}")
+    print(f"STDIO_FRAMING_STATUS={framing_proof['status']}")
+    ok = result["live_introspection_status"] == "PASS" and framing_proof["status"] == "PASS"
+    return 0 if ok else 1
+
+
+def cmd_live_compress_demo(args: argparse.Namespace) -> int:
+    result = run_live_compress_demo(
+        max_response_tokens=args.max_response_tokens,
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
+        stdio_framing=args.stdio_framing,
+    )
+    print(f"LIVE_RESPONSE_BEFORE_TOKENS={result['before_response_tokens']}")
+    print(f"LIVE_RESPONSE_AFTER_TOKENS={result['after_response_tokens']}")
+    print(f"LIVE_RESPONSE_COMPRESSED={str(result['was_compressed']).lower()}")
+    print(f"LIVE_RESPONSE_COMPRESSION_STATUS={result['live_response_compression_status']}")
+    return 0 if result["live_response_compression_status"] == "PASS" else 1
 
 
 def cmd_fixture_mcp_server(args: argparse.Namespace) -> int:
@@ -443,7 +471,15 @@ def build_parser() -> argparse.ArgumentParser:
     allow_start_demo = sub.add_parser("allow-start-demo")
     allow_start_demo.add_argument("--start-timeout-seconds", type=float, default=2.0)
     allow_start_demo.add_argument("--max-stdio-bytes", type=int, default=65536)
+    allow_start_demo.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
     allow_start_demo.set_defaults(func=cmd_allow_start_demo)
+
+    live_compress_demo = sub.add_parser("live-compress-demo")
+    live_compress_demo.add_argument("--max-response-tokens", type=int, default=4000)
+    live_compress_demo.add_argument("--start-timeout-seconds", type=float, default=2.0)
+    live_compress_demo.add_argument("--max-stdio-bytes", type=int, default=65536)
+    live_compress_demo.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
+    live_compress_demo.set_defaults(func=cmd_live_compress_demo)
 
     return parser
 
@@ -463,6 +499,7 @@ def main(argv: list[str] | None = None) -> int:
                 "exit-before-tools",
                 "stderr-secret",
                 "large",
+                "oversized-call",
             ),
             default="ok",
         )

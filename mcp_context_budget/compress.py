@@ -125,6 +125,54 @@ def compress_response_fixtures(
     return report
 
 
+def compress_sampled_live_response(
+    response: Any,
+    *,
+    max_response_tokens: int,
+    keep_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    fields = keep_fields or ["id", "title", "url", "state", "summary"]
+    before = response_token_count(response)
+    compressed = compress_response(
+        response, max_response_tokens=max_response_tokens, keep_fields=fields
+    )
+    after = response_token_count(compressed)
+    status = "PASS" if after <= max_response_tokens else "FAIL"
+    return {
+        "before_response_tokens": before,
+        "after_response_tokens": after,
+        "was_compressed": before > max_response_tokens,
+        "status": status,
+    }
+
+
+def run_live_compress_demo(
+    *,
+    max_response_tokens: int,
+    start_timeout_seconds: float = 2.0,
+    max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
+) -> dict[str, Any]:
+    import sys
+
+    from mcp_context_budget.live_stdio import sample_live_tool_response
+
+    sampled = sample_live_tool_response(
+        server="fixture",
+        command=sys.executable,
+        args=["-m", "mcp_context_budget", "_fixture-mcp-server", "--mode", "oversized-call"],
+        env={},
+        tool_name="safe_read",
+        tool_arguments={"path": "demo"},
+        start_timeout_seconds=start_timeout_seconds,
+        max_stdio_bytes=max_stdio_bytes,
+        stdio_framing=stdio_framing,
+    )
+    result = compress_sampled_live_response(sampled, max_response_tokens=max_response_tokens)
+    result["live_response_compression_status"] = result.pop("status")
+    return result
+
+
 def run_compress_demo(*, max_response_tokens: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="mcp-context-budget-compress-") as tmp:
         root = Path(tmp)

@@ -496,12 +496,256 @@ def run_fixture_mcp_server(*, mode: str = "ok") -> int:
                 )
             else:
                 send({"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": tools}})
+        elif method == "tools/call" and mode == "oversized-call":
+            if not initialized:
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "error": {"code": -32002, "message": "not initialized"},
+                    }
+                )
+            else:
+                params = message.get("params")
+                if not isinstance(params, dict):
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "error": {"code": -32602, "message": "invalid params"},
+                        }
+                    )
+                    continue
+                tool_name = params.get("name")
+                if tool_name != "safe_read":
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": message.get("id"),
+                            "error": {"code": -32601, "message": "unknown tool"},
+                        }
+                    )
+                    continue
+                payload = {
+                    "id": 42,
+                    "title": "Live sampled issue",
+                    "url": "https://example.invalid/issues/42",
+                    "state": "open",
+                    # Large enough to exceed a 4k response-token cap, small enough
+                    # to stay under the default 64KiB stdio byte budget.
+                    "summary": "oversized live tool response payload " * 900,
+                }
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": message.get("id"),
+                        "result": {
+                            "content": [
+                                {"type": "text", "text": json.dumps(payload, sort_keys=True)}
+                            ],
+                            "isError": False,
+                        },
+                    }
+                )
+
+
+def _tool_call_result_payload(result: dict[str, Any]) -> Any:
+    content = result.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        return {"summary": text}
+    return result
+
+
+def _sample_live_tool_response_once(
+    *,
+    server: str,
+    command: object,
+    args: object,
+    env: object,
+    tool_name: str,
+    tool_arguments: dict[str, Any] | None,
+    start_timeout_seconds: float,
+    max_stdio_bytes: int,
+    stdio_framing: str,
+) -> Any:
+    if not isinstance(command, str) or not command:
+        raise ValueError(f"server {server} cannot be started: command is missing")
+    argv = [command]
+    if isinstance(args, list):
+        argv.extend(str(arg) for arg in args)
+    child_env = os.environ.copy()
+    if isinstance(env, dict):
+        child_env.update({str(key): str(value) for key, value in env.items()})
+    process: subprocess.Popen[bytes] | None = None
+    stderr_capture = tempfile.TemporaryFile(mode="w+b")
+    try:
+        process = subprocess.Popen(  # noqa: S603
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_capture,
+            env=child_env,
+            shell=False,
+        )
+        if process.stdout is None:
+            raise ValueError("MCP server stdout is unavailable")
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + start_timeout_seconds
+        budget = _ByteBudget(max_stdio_bytes)
+        _write_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "mcp-context-budget", "version": "0.4.0"},
+                },
+            },
+            framing=stdio_framing,
+        )
+        _read_response(
+            process,
+            selector,
+            expected_id=1,
+            deadline=deadline,
+            budget=budget,
+            framing=stdio_framing,
+        )
+        _write_message(
+            process,
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            framing=stdio_framing,
+        )
+        _write_message(
+            process,
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            framing=stdio_framing,
+        )
+        _read_response(
+            process,
+            selector,
+            expected_id=2,
+            deadline=deadline,
+            budget=budget,
+            framing=stdio_framing,
+        )
+        call_params: dict[str, Any] = {"name": tool_name, "arguments": tool_arguments or {}}
+        _write_message(
+            process,
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": call_params},
+            framing=stdio_framing,
+        )
+        call_result = _read_response(
+            process,
+            selector,
+            expected_id=3,
+            deadline=deadline,
+            budget=budget,
+            framing=stdio_framing,
+        )
+        return _tool_call_result_payload(call_result)
+    except TimeoutError as exc:
+        raise ValueError(f"timed out sampling live tool response from {server}") from exc
+    except OSError as exc:
+        raise ValueError(f"failed to sample live tool response from {server}: {exc}") from exc
+    finally:
+        if process is not None:
+            _terminate_process(process)
+        try:
+            stderr_capture.seek(0)
+            captured = stderr_capture.read().decode("utf-8", errors="replace")
+        except (OSError, ValueError):
+            captured = ""
+        finally:
+            stderr_capture.close()
+        if captured:
+            sys.stderr.write(redact_text(captured, env))
+            sys.stderr.flush()
+
+
+def sample_live_tool_response(
+    *,
+    server: str,
+    command: object,
+    args: object,
+    env: object,
+    tool_name: str,
+    tool_arguments: dict[str, Any] | None = None,
+    start_timeout_seconds: float = 5.0,
+    max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
+) -> Any:
+    if stdio_framing not in STDIO_FRAMINGS:
+        raise ValueError("--stdio-framing must be one of: " + ", ".join(STDIO_FRAMINGS))
+    attempts = ("json-lines", "content-length") if stdio_framing == "auto" else (stdio_framing,)
+    failures: list[str] = []
+    for framing in attempts:
+        try:
+            return _sample_live_tool_response_once(
+                server=server,
+                command=command,
+                args=args,
+                env=env,
+                tool_name=tool_name,
+                tool_arguments=tool_arguments,
+                start_timeout_seconds=start_timeout_seconds,
+                max_stdio_bytes=max_stdio_bytes,
+                stdio_framing=framing,
+            )
+        except ValueError as exc:
+            failures.append(f"{framing}: {exc}")
+    if len(failures) == 1:
+        raise ValueError(failures[0])
+    raise ValueError("live tool response sampling failed for all framings: " + "; ".join(failures))
+
+
+def prove_stdio_framing(
+    *,
+    start_timeout_seconds: float = 2.0,
+    max_stdio_bytes: int = 65536,
+) -> dict[str, str]:
+    base_args = ["-m", "mcp_context_budget", "_fixture-mcp-server"]
+    introspect_server_tools(
+        server="fixture",
+        command=sys.executable,
+        args=base_args,
+        env={},
+        start_timeout_seconds=start_timeout_seconds,
+        max_stdio_bytes=max_stdio_bytes,
+        stdio_framing="json-lines",
+    )
+    introspect_server_tools(
+        server="fixture",
+        command=sys.executable,
+        args=[*base_args, "--mode", "content-length"],
+        env={},
+        start_timeout_seconds=start_timeout_seconds,
+        max_stdio_bytes=max_stdio_bytes,
+        stdio_framing="auto",
+    )
+    return {
+        "json_lines": "PASS",
+        "auto_fallback": "PASS",
+        "status": "PASS",
+    }
 
 
 def run_allow_start_demo(
     *,
     start_timeout_seconds: float = 2.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
 ) -> dict[str, Any]:
     import tempfile
     from pathlib import Path
@@ -537,6 +781,7 @@ def run_allow_start_demo(
             allow_start=True,
             start_timeout_seconds=start_timeout_seconds,
             max_stdio_bytes=max_stdio_bytes,
+            stdio_framing=stdio_framing,
         )
         lock.write_text(
             json.dumps(
@@ -556,6 +801,7 @@ def run_allow_start_demo(
             allow_start=True,
             start_timeout_seconds=start_timeout_seconds,
             max_stdio_bytes=max_stdio_bytes,
+            stdio_framing=stdio_framing,
             materialize_tools_list=materialized,
         )
         rescan_records, _ = load_mcp_config(config, allow_start=False)

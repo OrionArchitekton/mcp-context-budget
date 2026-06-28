@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-06-28
 
-- Add `--stdio-framing auto|json-lines|content-length` for `--allow-start`
-  introspection. Auto mode prefers the current MCP SDK JSON-lines transport
-  used by Serena and falls back to the legacy `Content-Length` fixture transport
-  without changing the local-first, timeout-bounded startup model.
+- Release the post-v0.3.0 JSON-lines / Content-Length stdio framing compat for
+  `--allow-start` introspection. `allow-start-demo` now prints
+  `STDIO_FRAMING_*=PASS` proof lines without changing the transport
+  implementation.
+- Add opt-in `live-compress-demo` for bounded live stdio tool-response
+  sampling plus extractive compression. The probe is timeout-bounded,
+  byte-bounded, fixture-proven, and never intercepts ongoing tool traffic.
+- Defer parallel Ollama embeddings and broader CLI polish to v0.5 per the
+  gate-approved AMBITIOUS cut.
 
 ## 0.3.0 - 2026-06-20
 
