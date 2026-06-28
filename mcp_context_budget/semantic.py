@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -104,22 +104,59 @@ def _ollama_embeddings_parallel(
     if workers <= 1:
         return [_ollama_embedding(text, base_url=base_url, model=model) for text in texts]
     ordered: list[list[float] | None] = [None] * len(texts)
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_ollama_embedding, text, base_url=base_url, model=model): idx
-            for idx, text in enumerate(texts)
-        }
+    # Bounded in-flight window instead of pre-submitting the whole batch.
+    #
+    # Two failure-mode hazards this guards against, both flagged in review:
+    #   1. Pre-submitting every request means worker threads keep pulling queued
+    #      work after a fast failure, so an Ollama outage amplifies load and the
+    #      failure is observed late and non-deterministically.
+    #   2. Re-raising inside a `with ThreadPoolExecutor(...)` runs shutdown with
+    #      wait=True, which joins already-running requests (each up to the 10s
+    #      urlopen timeout) before the caller sees the error.
+    #
+    # We keep at most `workers` requests in flight and only submit the next text
+    # after one completes successfully. On the first failure we stop submitting
+    # and shut down non-blocking (wait=False, cancel_futures=True): not-yet-started
+    # work is never enqueued, and any still-running request drains on its own
+    # bounded timeout in the background while the caller fails closed promptly.
+    executor = ThreadPoolExecutor(max_workers=workers)
+    next_index = 0
+    in_flight: dict[Future[list[float]], int] = {}
+    submitted: list[Future[list[float]]] = []
+
+    def submit_next() -> None:
+        nonlocal next_index
+        future = executor.submit(
+            _ollama_embedding, texts[next_index], base_url=base_url, model=model
+        )
+        in_flight[future] = next_index
+        submitted.append(future)
+        next_index += 1
+        # `on_futures` observes the cumulative set of requests that have actually
+        # been submitted (started). It is called with a fresh list each time the
+        # set grows, so a caller can confirm which requests were ever launched —
+        # work that is never submitted after a failure never appears here.
         if on_futures is not None:
-            on_futures(list(futures))
-        try:
-            for future in as_completed(futures):
-                idx = futures[future]
+            on_futures(list(submitted))
+
+    try:
+        for _ in range(workers):
+            if next_index >= len(texts):
+                break
+            submit_next()
+        while in_flight:
+            done, _pending = wait(set(in_flight), return_when=FIRST_COMPLETED)
+            for future in done:
+                idx = in_flight.pop(future)
+                # Surfaces any worker exception here; the except clause stops the
+                # batch before submitting (or waiting on) further work.
                 ordered[idx] = future.result()
-        except Exception:
-            for pending in futures:
-                if not pending.done():
-                    pending.cancel()
-            raise
+            while next_index < len(texts) and len(in_flight) < workers:
+                submit_next()
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
     for vector in ordered:
         if vector is None:
             raise ValueError("parallel Ollama embedding batch returned incomplete results")

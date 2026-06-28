@@ -5,7 +5,7 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import Future, as_completed
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch
 
@@ -192,27 +192,35 @@ def test_parallel_ollama_modes(
             assert peak <= 2
 
 
-def test_parallel_batch_raises_on_incomplete_results() -> None:
-    real_as_completed = as_completed
+def test_parallel_batch_fills_every_slot_in_order_under_bounded_window() -> None:
+    # Completeness invariant: with more texts than workers, the bounded in-flight
+    # window must still embed every text and return results positionally aligned to
+    # the input order (so no slot is left unfilled / fail-closed guard never trips).
+    texts = [f"text-{i}" for i in range(7)]
 
-    def one_future_only(futures, timeout=None):
-        iterator = real_as_completed(futures, timeout=timeout)
-        yield next(iterator)
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        n = float(text.split("-")[1])
+        return [n, 0.0]
 
-    with patch("mcp_context_budget.semantic.as_completed", side_effect=one_future_only):
-        with patch("mcp_context_budget.semantic._ollama_embedding", return_value=[1.0, 0.0]):
-            with pytest.raises(ValueError, match="incomplete results"):
-                _ollama_embeddings_parallel(
-                    ["alpha", "beta"],
-                    base_url="http://localhost:11434",
-                    model="m",
-                )
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+        vectors = _ollama_embeddings_parallel(
+            texts,
+            base_url="http://localhost:11434",
+            model="m",
+            max_workers=2,
+        )
+
+    assert vectors == [[float(i), 0.0] for i in range(7)]
 
 
-def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
+def test_parallel_batch_stops_submitting_after_embedding_error() -> None:
+    # Deterministic fail-closed contract (no scheduling luck): with a bounded
+    # in-flight window of `max_workers`, work beyond the first wave is only
+    # submitted after a successful completion. When a request in the first wave
+    # fails, the not-yet-submitted request is never started.
     hold = threading.Event()
     calls: list[str] = []
-    captured: list[Future[list[float]]] = []
+    submitted_snapshots: list[list[Future[list[float]]]] = []
 
     def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
         calls.append(text)
@@ -221,7 +229,7 @@ def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
         hold.wait(timeout=2)
         return [1.0, 0.0]
 
-    texts = ["hold-a", "hold-b", "fail", "pending"]
+    texts = ["hold-a", "hold-b", "fail", "later"]
     with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
         with pytest.raises(ValueError, match="batch fail"):
             _ollama_embeddings_parallel(
@@ -229,16 +237,51 @@ def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
                 base_url="http://localhost:11434",
                 model="m",
                 max_workers=3,
-                on_futures=captured.extend,
+                on_futures=submitted_snapshots.append,
             )
 
     assert "fail" in calls
-    assert "pending" not in calls
-    assert len(captured) == 4
-    pending_future = captured[3]
-    assert pending_future.cancelled()
-    running_futures = [captured[0], captured[1]]
-    assert all(not future.cancelled() for future in running_futures)
+    # The fourth text was never submitted, so its request never started.
+    assert "later" not in calls
+    submitted = submitted_snapshots[-1]
+    assert len(submitted) == 3
+    # Already-running first-wave requests are not cancelled (they were executing);
+    # only never-submitted work is withheld.
+    assert all(not future.cancelled() for future in submitted)
+
+
+def test_parallel_batch_error_returns_promptly_without_waiting_on_running() -> None:
+    # A running embedding that blocks must NOT delay the caller's observation of a
+    # fast failure. Re-raising inside `with ThreadPoolExecutor(...)` would join the
+    # blocking request (shutdown wait=True) before the error surfaced. With
+    # shutdown(wait=False, cancel_futures=True) the caller must see the failure
+    # well before the slow request would have finished.
+    release = threading.Event()
+
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        if text == "fail":
+            raise ValueError("fast failure")
+        if text == "block":
+            # Would hold the caller for ~5s if shutdown waited on running work.
+            release.wait(timeout=5)
+        return [1.0, 0.0]
+
+    texts = ["block", "fail"]
+    start = time.monotonic()
+    try:
+        with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+            with pytest.raises(ValueError, match="fast failure"):
+                _ollama_embeddings_parallel(
+                    texts,
+                    base_url="http://localhost:11434",
+                    model="m",
+                    max_workers=2,
+                )
+        elapsed = time.monotonic() - start
+        # Comfortably under the 5s block: proves we did not join the running request.
+        assert elapsed < 2.0, f"error path blocked on running request for {elapsed:.2f}s"
+    finally:
+        release.set()
 
 
 def test_rank_semantic_tools_preserves_ordering_after_parallel_batch() -> None:
