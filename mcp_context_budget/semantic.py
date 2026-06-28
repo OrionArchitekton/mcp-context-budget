@@ -7,7 +7,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -95,6 +96,7 @@ def _ollama_embeddings_parallel(
     base_url: str,
     model: str,
     max_workers: int | None = None,
+    on_futures: Callable[[list[Future[list[float]]]], None] | None = None,
 ) -> list[list[float]]:
     if not texts:
         return []
@@ -107,6 +109,8 @@ def _ollama_embeddings_parallel(
             executor.submit(_ollama_embedding, text, base_url=base_url, model=model): idx
             for idx, text in enumerate(texts)
         }
+        if on_futures is not None:
+            on_futures(list(futures))
         try:
             for future in as_completed(futures):
                 idx = futures[future]

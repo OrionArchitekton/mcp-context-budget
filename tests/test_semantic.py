@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from concurrent.futures import as_completed
+from concurrent.futures import Future, as_completed
 from unittest.mock import patch
 
 import pytest
@@ -212,6 +212,7 @@ def test_parallel_batch_raises_on_incomplete_results() -> None:
 def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
     hold = threading.Event()
     calls: list[str] = []
+    captured: list[Future[list[float]]] = []
 
     def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
         calls.append(text)
@@ -228,10 +229,16 @@ def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
                 base_url="http://localhost:11434",
                 model="m",
                 max_workers=3,
+                on_futures=captured.extend,
             )
 
     assert "fail" in calls
     assert "pending" not in calls
+    assert len(captured) == 4
+    pending_future = captured[3]
+    assert pending_future.cancelled()
+    running_futures = [captured[0], captured[1]]
+    assert all(not future.cancelled() for future in running_futures)
 
 
 def test_rank_semantic_tools_preserves_ordering_after_parallel_batch() -> None:
