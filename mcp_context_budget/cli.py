@@ -179,7 +179,6 @@ def cmd_semantic_select(args: argparse.Namespace) -> int:
 
 
 def cmd_semantic_demo(args: argparse.Namespace) -> int:
-    parallel_proof = prove_parallel_ollama_batching()
     result = run_semantic_demo(
         task=args.task,
         max_tools=args.max_tools,
@@ -192,9 +191,21 @@ def cmd_semantic_demo(args: argparse.Namespace) -> int:
         print(f"SELECTED_TOOL={tool_id}")
     print(f"SEMANTIC_STATUS={result['semantic_status']}")
     print(f"SEMANTIC_SELECT_STATUS={result['semantic_status']}")
-    print(f"PARALLEL_OLLAMA_BATCHED={str(parallel_proof['batched']).lower()}")
-    ok = result["semantic_status"] == "PASS" and parallel_proof["status"] == "PASS"
+    if args.embedding_backend == "ollama":
+        parallel_proof = prove_parallel_ollama_batching()
+        print(f"PARALLEL_OLLAMA_BATCHED={str(parallel_proof['batched']).lower()}")
+        ok = result["semantic_status"] == "PASS" and parallel_proof["status"] == "PASS"
+    else:
+        print("PARALLEL_OLLAMA_BATCHED=skipped")
+        ok = result["semantic_status"] == "PASS"
     return 0 if ok else 1
+
+
+def cmd_prove_parallel_ollama_demo(_args: argparse.Namespace) -> int:
+    proof = prove_parallel_ollama_batching()
+    print(f"PARALLEL_OLLAMA_BATCHED={str(proof['batched']).lower()}")
+    print(f"PARALLEL_OLLAMA_PROOF_STATUS={proof['status']}")
+    return 0 if proof["status"] == "PASS" else 1
 
 
 def cmd_compress_responses(args: argparse.Namespace) -> int:
@@ -405,7 +416,13 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_demo.add_argument("--task", required=True)
     semantic_demo.add_argument("--max-tools", type=int, default=3)
     semantic_demo.add_argument("--max-schema-tokens", type=int, default=3000)
+    semantic_demo.add_argument(
+        "--embedding-backend", choices=("fixture", "ollama"), default="fixture"
+    )
     semantic_demo.set_defaults(func=cmd_semantic_demo)
+
+    prove_parallel_ollama_demo = sub.add_parser("prove-parallel-ollama-demo")
+    prove_parallel_ollama_demo.set_defaults(func=cmd_prove_parallel_ollama_demo)
 
     compress_responses = sub.add_parser("compress-responses")
     compress_responses.add_argument("--fixtures", type=Path, required=True)

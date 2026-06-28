@@ -110,7 +110,10 @@ def _ollama_embeddings_parallel(
         for future in as_completed(futures):
             idx = futures[future]
             ordered[idx] = future.result()
-    return [vector for vector in ordered if vector is not None]
+    for vector in ordered:
+        if vector is None:
+            raise ValueError("parallel Ollama embedding batch returned incomplete results")
+    return [vector for vector in ordered]
 
 
 def prove_parallel_ollama_batching() -> dict[str, str | bool]:

@@ -8,8 +8,8 @@
   implementation.
 - Parallelize Ollama embeddings in `semantic-select` via bounded stdlib
   `ThreadPoolExecutor` batching when `--embedding-backend ollama` is selected.
-  `semantic-demo` prints `PARALLEL_OLLAMA_BATCHED=true` and
-  `SEMANTIC_SELECT_STATUS=PASS`.
+  `prove-parallel-ollama-demo` prints `PARALLEL_OLLAMA_BATCHED=true`;
+  `semantic-demo` with fixture backend prints `SEMANTIC_SELECT_STATUS=PASS`.
 - Defer live-response-compression and broader CLI polish to v0.5.
 
 ## 0.3.0 - 2026-06-20
