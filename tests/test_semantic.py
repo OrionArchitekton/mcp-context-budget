@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from mcp_context_budget.models import ToolRecord
 from mcp_context_budget.semantic import prove_parallel_ollama_batching, rank_semantic_tools
 
@@ -148,6 +150,26 @@ def test_parallel_ollama_uses_thread_pool_batching() -> None:
 
     assert peak >= 2
     assert len(ranked) == len(tools)
+
+
+def test_parallel_ollama_fails_closed_on_embedding_error() -> None:
+    tools = [
+        ToolRecord("github", "alpha", "alpha tool", {}),
+        ToolRecord("github", "beta", "beta tool", {}),
+    ]
+
+    def flaky_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        if "beta" in text:
+            raise ValueError("Ollama embedding request failed: simulated outage")
+        return [1.0, 0.0]
+
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=flaky_embedding):
+        with pytest.raises(ValueError, match="simulated outage"):
+            rank_semantic_tools(
+                tools,
+                task="alpha task",
+                embedding_backend="ollama",
+            )
 
 
 def test_prove_parallel_ollama_batching_passes() -> None:
