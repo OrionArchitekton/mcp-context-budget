@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from concurrent.futures import as_completed
 from unittest.mock import patch
 
 import pytest
@@ -189,6 +190,23 @@ def test_parallel_ollama_modes(
         assert peak >= expect_peak_ge
         if case == "worker_cap":
             assert peak <= 2
+
+
+def test_parallel_batch_raises_on_incomplete_results() -> None:
+    real_as_completed = as_completed
+
+    def one_future_only(futures, timeout=None):
+        iterator = real_as_completed(futures, timeout=timeout)
+        yield next(iterator)
+
+    with patch("mcp_context_budget.semantic.as_completed", side_effect=one_future_only):
+        with patch("mcp_context_budget.semantic._ollama_embedding", return_value=[1.0, 0.0]):
+            with pytest.raises(ValueError, match="incomplete results"):
+                _ollama_embeddings_parallel(
+                    ["alpha", "beta"],
+                    base_url="http://localhost:11434",
+                    model="m",
+                )
 
 
 def test_rank_semantic_tools_preserves_ordering_after_parallel_batch() -> None:
