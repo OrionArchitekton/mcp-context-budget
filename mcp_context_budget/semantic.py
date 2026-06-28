@@ -122,9 +122,7 @@ def _ollama_embeddings_parallel(
             raise
     for vector in ordered:
         if vector is None:
-            raise ValueError(
-                "parallel Ollama embedding batch returned incomplete results"
-            )
+            raise ValueError("parallel Ollama embedding batch returned incomplete results")
     return [vector for vector in ordered]
 
 

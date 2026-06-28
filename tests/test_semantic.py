@@ -5,8 +5,8 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 from concurrent.futures import Future, as_completed
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
