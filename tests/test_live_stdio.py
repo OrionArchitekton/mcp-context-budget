@@ -4,10 +4,11 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from mcp_context_budget.live_stdio import introspect_server_tools
+from mcp_context_budget.live_stdio import introspect_server_tools, prove_stdio_framing
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -165,3 +166,16 @@ def test_allow_start_demo_honors_content_length_framing() -> None:
     assert lines["ALLOW_START_FIXTURE_SERVER"] == "started"
     assert int(lines["LIVE_TOOLS_LISTED"]) >= 2
     assert lines["LIVE_INTROSPECTION_STATUS"] == "PASS"
+
+
+def test_prove_stdio_framing_reports_fail_status_instead_of_raising() -> None:
+    # A probe failure must surface as a machine-readable FAIL status dict so the
+    # demo can print STDIO_FRAMING_*=FAIL and return a non-zero exit, rather than
+    # aborting with an uncaught traceback before the status lines are emitted.
+    with patch(
+        "mcp_context_budget.live_stdio.introspect_server_tools",
+        side_effect=ValueError("timed out waiting for MCP server output"),
+    ):
+        proof = prove_stdio_framing(start_timeout_seconds=0.1)
+
+    assert proof == {"json_lines": "FAIL", "auto_fallback": "FAIL", "status": "FAIL"}

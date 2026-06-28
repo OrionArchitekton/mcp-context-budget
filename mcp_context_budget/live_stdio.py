@@ -503,29 +503,34 @@ def prove_stdio_framing(
     start_timeout_seconds: float = 2.0,
     max_stdio_bytes: int = 65536,
 ) -> dict[str, str]:
+    # Always hand back a status dict so the caller can print machine-readable
+    # STDIO_FRAMING_* lines and pick an exit code. A probe failure must surface as
+    # a FAIL status (fail-closed and observable), not an uncaught traceback that
+    # aborts before the status lines are printed.
     base_args = ["-m", "mcp_context_budget", "_fixture-mcp-server"]
-    introspect_server_tools(
-        server="fixture",
-        command=sys.executable,
-        args=base_args,
-        env={},
-        start_timeout_seconds=start_timeout_seconds,
-        max_stdio_bytes=max_stdio_bytes,
-        stdio_framing="json-lines",
-    )
-    introspect_server_tools(
-        server="fixture",
-        command=sys.executable,
-        args=[*base_args, "--mode", "content-length"],
-        env={},
-        start_timeout_seconds=start_timeout_seconds,
-        max_stdio_bytes=max_stdio_bytes,
-        stdio_framing="auto",
-    )
+
+    def _probe(args: list[str], *, stdio_framing: str) -> str:
+        try:
+            introspect_server_tools(
+                server="fixture",
+                command=sys.executable,
+                args=args,
+                env={},
+                start_timeout_seconds=start_timeout_seconds,
+                max_stdio_bytes=max_stdio_bytes,
+                stdio_framing=stdio_framing,
+            )
+        except (ValueError, OSError):
+            return "FAIL"
+        return "PASS"
+
+    json_lines = _probe(base_args, stdio_framing="json-lines")
+    auto_fallback = _probe([*base_args, "--mode", "content-length"], stdio_framing="auto")
+    status = "PASS" if json_lines == "PASS" and auto_fallback == "PASS" else "FAIL"
     return {
-        "json_lines": "PASS",
-        "auto_fallback": "PASS",
-        "status": "PASS",
+        "json_lines": json_lines,
+        "auto_fallback": auto_fallback,
+        "status": status,
     }
 
 
