@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRATCH="${SCRATCH:-/tmp/grok-goal-9ea10ed364b5/implementer}"
-WT="${WT:-$HOME/.worktrees/mcp-ctx-budget-v04}"
-REPO="${REPO:-$HOME/src/orion-estate/personal-brand/oss-projects/mcp-context-budget/mcp-context-budget-oss}"
-MAP="${MAP:-$HOME/.orion/maps/mcp-context-budget-v04-MAP-20260628.md}"
-RECON="${RECON:-$HOME/.orion/goal-prompts/mcp-context-budget-v04-20260628.recon.json}"
+# Self-locating: default the worktree/repo to the checkout that contains this
+# script so verify-v04.sh runs in any clone or CI, not just the author's machine.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+
+SCRATCH="${SCRATCH:-$(mktemp -d -t verify-v04-XXXXXX)}"
+WT="${WT:-$REPO_ROOT}"
+REPO="${REPO:-$REPO_ROOT}"
+# MAP/RECON are author-local release-planning artifacts. They are optional: when
+# unset (or pointing at a missing file) the precondition block is skipped instead
+# of failing, so the script never depends on a private path layout.
+MAP="${MAP:-}"
+RECON="${RECON:-}"
 
 mkdir -p "$SCRATCH"
 cd "$WT"
 
 echo "=== verify-v04 $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
-# VP1 precondition
+# VP1 precondition (optional author-local planning artifacts)
 {
   echo "=== VP1 precondition ==="
-  head -5 "$RECON"
-  grep -E 'approval_state|TIGHT|parallel-ollama|CENTRAL_FORK' "$MAP" | head -8
+  if [[ -n "$RECON" && -f "$RECON" ]]; then
+    head -5 "$RECON"
+  else
+    echo "recon=skipped (set RECON to an existing file to include)"
+  fi
+  if [[ -n "$MAP" && -f "$MAP" ]]; then
+    grep -E 'approval_state|TIGHT|parallel-ollama|CENTRAL_FORK' "$MAP" | head -8
+  else
+    echo "map=skipped (set MAP to an existing file to include)"
+  fi
 } > "$SCRATCH/precondition.txt"
 
 # VP2 preflight
@@ -38,7 +54,13 @@ echo "=== verify-v04 $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 } > "$SCRATCH/build-changes.txt"
 
 # VP4 pytest
-.venv/bin/python -m pytest -q --tb=no 2>&1 | tee "$SCRATCH/pytest-output.txt"
+# Prefer a local .venv when present, else fall back to PYTHON / python3 on PATH.
+if [[ -x ".venv/bin/python" ]]; then
+  PYTHON=".venv/bin/python"
+else
+  PYTHON="${PYTHON:-python3}"
+fi
+"$PYTHON" -m pytest -q --tb=no 2>&1 | tee "$SCRATCH/pytest-output.txt"
 
 # VP5 docker
 docker build -t mcp-context-budget:local . 2>&1 | tail -5 | tee "$SCRATCH/docker-build.txt"

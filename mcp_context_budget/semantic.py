@@ -106,19 +106,22 @@ def _ollama_embeddings_parallel(
     ordered: list[list[float] | None] = [None] * len(texts)
     # Bounded in-flight window instead of pre-submitting the whole batch.
     #
-    # Two failure-mode hazards this guards against, both flagged in review:
-    #   1. Pre-submitting every request means worker threads keep pulling queued
-    #      work after a fast failure, so an Ollama outage amplifies load and the
-    #      failure is observed late and non-deterministically.
-    #   2. Re-raising inside a `with ThreadPoolExecutor(...)` runs shutdown with
-    #      wait=True, which joins already-running requests (each up to the 10s
-    #      urlopen timeout) before the caller sees the error.
+    # What this guarantees:
+    #   - Strict concurrency cap: at most `workers` requests are ever in flight,
+    #     and the next text is submitted only after a prior one completes. We never
+    #     pre-enqueue the whole tool list against a worker pool.
+    #   - Prompt fail-closed: on the FIRST observed failure we stop submitting and
+    #     shut down non-blocking (wait=False, cancel_futures=True). The caller sees
+    #     the error without joining still-running requests (each up to the 10s
+    #     urlopen timeout) — re-raising inside a `with ThreadPoolExecutor(...)`
+    #     would instead run shutdown(wait=True) and block on those requests.
     #
-    # We keep at most `workers` requests in flight and only submit the next text
-    # after one completes successfully. On the first failure we stop submitting
-    # and shut down non-blocking (wait=False, cancel_futures=True): not-yet-started
-    # work is never enqueued, and any still-running request drains on its own
-    # bounded timeout in the background while the caller fails closed promptly.
+    # What this does NOT guarantee: that no further requests start while one slow
+    # request is still pending and will eventually fail. Because slots reopen on
+    # each SUCCESSFUL completion, fast successes can keep submitting remaining texts
+    # before a slow failure is observed. We deliberately do not cancel in-flight
+    # work to force an earlier stop; the cap above bounds peak load, and any
+    # in-flight request remains bounded by its own urlopen timeout.
     executor = ThreadPoolExecutor(max_workers=workers)
     next_index = 0
     in_flight: dict[Future[list[float]], int] = {}
