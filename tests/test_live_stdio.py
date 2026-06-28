@@ -4,10 +4,11 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from mcp_context_budget.live_stdio import introspect_server_tools
+from mcp_context_budget.live_stdio import introspect_server_tools, prove_stdio_framing
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -127,7 +128,13 @@ def test_allow_start_scan_redacts_env_even_when_server_writes_stderr(tmp_path: P
 
 
 def test_allow_start_demo_proves_materialized_enforcement() -> None:
-    result = run_cli("allow-start-demo", "--start-timeout-seconds", "2")
+    result = run_cli(
+        "allow-start-demo",
+        "--start-timeout-seconds",
+        "2",
+        "--stdio-framing",
+        "auto",
+    )
 
     assert result.returncode == 0, result.stdout + result.stderr
     lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
@@ -137,3 +144,38 @@ def test_allow_start_demo_proves_materialized_enforcement() -> None:
     assert lines["MATERIALIZED_TOOL_LIST"] == "true"
     assert lines["AFTER_CONFIG_NOT_PATCHABLE"] == "0"
     assert lines["LIVE_INTROSPECTION_STATUS"] == "PASS"
+    assert lines["STDIO_FRAMING_JSON_LINES"] == "PASS"
+    assert lines["STDIO_FRAMING_AUTO_FALLBACK"] == "PASS"
+    assert lines["STDIO_FRAMING_STATUS"] == "PASS"
+
+
+def test_allow_start_demo_honors_content_length_framing() -> None:
+    # When the demo is forced to content-length, the fixture server must also
+    # speak content-length; otherwise the client frames content-length against a
+    # JSON-lines server and the exposed choice cannot work.
+    result = run_cli(
+        "allow-start-demo",
+        "--start-timeout-seconds",
+        "2",
+        "--stdio-framing",
+        "content-length",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert lines["ALLOW_START_FIXTURE_SERVER"] == "started"
+    assert int(lines["LIVE_TOOLS_LISTED"]) >= 2
+    assert lines["LIVE_INTROSPECTION_STATUS"] == "PASS"
+
+
+def test_prove_stdio_framing_reports_fail_status_instead_of_raising() -> None:
+    # A probe failure must surface as a machine-readable FAIL status dict so the
+    # demo can print STDIO_FRAMING_*=FAIL and return a non-zero exit, rather than
+    # aborting with an uncaught traceback before the status lines are emitted.
+    with patch(
+        "mcp_context_budget.live_stdio.introspect_server_tools",
+        side_effect=ValueError("timed out waiting for MCP server output"),
+    ):
+        proof = prove_stdio_framing(start_timeout_seconds=0.1)
+
+    assert proof == {"json_lines": "FAIL", "auto_fallback": "FAIL", "status": "FAIL"}

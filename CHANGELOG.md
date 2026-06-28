@@ -1,11 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-06-28
 
-- Add `--stdio-framing auto|json-lines|content-length` for `--allow-start`
-  introspection. Auto mode prefers the current MCP SDK JSON-lines transport
-  used by Serena and falls back to the legacy `Content-Length` fixture transport
-  without changing the local-first, timeout-bounded startup model.
+- Release the post-v0.3.0 JSON-lines / Content-Length stdio framing compat for
+  `--allow-start` introspection. `allow-start-demo` now prints
+  `STDIO_FRAMING_*=PASS` proof lines without changing the transport
+  implementation.
+- Parallelize Ollama embeddings in `semantic-select` via bounded stdlib
+  `ThreadPoolExecutor` batching when `--embedding-backend ollama` is selected.
+  `prove-parallel-ollama-demo` prints `PARALLEL_OLLAMA_BATCHED=true`;
+  `semantic-demo` with fixture backend prints `SEMANTIC_SELECT_STATUS=PASS`.
+- Defer live-response-compression and broader CLI polish to v0.5.
 
 ## 0.3.0 - 2026-06-20
 

@@ -236,7 +236,9 @@ docker run --rm mcp-context-budget:local semantic-demo \
   --max-schema-tokens 3000
 docker run --rm mcp-context-budget:local compress-demo --max-response-tokens 4000
 docker run --rm mcp-context-budget:local config-demo
-docker run --rm mcp-context-budget:local allow-start-demo --start-timeout-seconds 2 --max-stdio-bytes 65536
+docker run --rm mcp-context-budget:local allow-start-demo --start-timeout-seconds 2 --max-stdio-bytes 65536 --stdio-framing auto
+docker run --rm mcp-context-budget:local semantic-demo --task "diagnose bug report" --max-tools 3 --max-schema-tokens 3000 --embedding-backend fixture
+docker run --rm mcp-context-budget:local prove-parallel-ollama-demo
 docker run --rm mcp-context-budget:local config-audit-demo
 docker run --rm mcp-context-budget:local config-multiserver-demo
 ```
@@ -262,7 +264,13 @@ CONFIG_MULTISERVER_STATUS=PASS
 
 These are not v0.4 commitments; they break the local-first CLI verifier shape.
 
-### Deferred to v0.4
+### Shipped in v0.4
+
+- Parallelized Ollama embeddings for `semantic-select` when
+  `--embedding-backend ollama` is explicitly selected (fixture backend remains
+  the default for CI/docker).
+
+### Deferred to v0.5
 
 - Automatic response compression for arbitrary live MCP servers.
-- Parallelized Ollama embeddings and broader CLI polish.
+- Broader CLI polish.

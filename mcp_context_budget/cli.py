@@ -16,13 +16,18 @@ from mcp_context_budget.config_edit import (
 from mcp_context_budget.demo import run_demo
 from mcp_context_budget.live_stdio import (
     STDIO_FRAMINGS,
+    prove_stdio_framing,
     run_allow_start_demo,
     run_fixture_mcp_server,
 )
 from mcp_context_budget.loaders import load_records
 from mcp_context_budget.reporting import markdown_report, sarif_from_lock, write_json
 from mcp_context_budget.selector import select_tools
-from mcp_context_budget.semantic import run_semantic_demo, select_semantic_tools
+from mcp_context_budget.semantic import (
+    prove_parallel_ollama_batching,
+    run_semantic_demo,
+    select_semantic_tools,
+)
 
 
 def _add_input_args(parser: argparse.ArgumentParser) -> None:
@@ -185,7 +190,21 @@ def cmd_semantic_demo(args: argparse.Namespace) -> int:
     for tool_id in result["semantic_selected_tools"]:
         print(f"SELECTED_TOOL={tool_id}")
     print(f"SEMANTIC_STATUS={result['semantic_status']}")
-    return 0 if result["semantic_status"] == "PASS" else 1
+    print(f"SEMANTIC_SELECT_STATUS={result['semantic_status']}")
+    # semantic-demo is a fixture-backed proof only. The parallel-Ollama batching
+    # proof lives on its own command (`prove-parallel-ollama-demo`) so a demo
+    # invocation can never print a mocked PARALLEL_OLLAMA_BATCHED=true that looks
+    # like a real Ollama run. Always emit the skipped marker here.
+    print("PARALLEL_OLLAMA_BATCHED=skipped")
+    ok = result["semantic_status"] == "PASS"
+    return 0 if ok else 1
+
+
+def cmd_prove_parallel_ollama_demo(_args: argparse.Namespace) -> int:
+    proof = prove_parallel_ollama_batching()
+    print(f"PARALLEL_OLLAMA_BATCHED={str(proof['batched']).lower()}")
+    print(f"PARALLEL_OLLAMA_PROOF_STATUS={proof['status']}")
+    return 0 if proof["status"] == "PASS" else 1
 
 
 def cmd_compress_responses(args: argparse.Namespace) -> int:
@@ -282,9 +301,14 @@ def cmd_config_audit_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_allow_start_demo(args: argparse.Namespace) -> int:
+    framing_proof = prove_stdio_framing(
+        start_timeout_seconds=args.start_timeout_seconds,
+        max_stdio_bytes=args.max_stdio_bytes,
+    )
     result = run_allow_start_demo(
         start_timeout_seconds=args.start_timeout_seconds,
         max_stdio_bytes=args.max_stdio_bytes,
+        stdio_framing=args.stdio_framing,
     )
     print("ALLOW_START_FIXTURE_SERVER=started")
     print(f"BEFORE_CONFIG_NOT_PATCHABLE={result['before_config_not_patchable']}")
@@ -292,7 +316,11 @@ def cmd_allow_start_demo(args: argparse.Namespace) -> int:
     print(f"MATERIALIZED_TOOL_LIST={str(result['materialized_tool_list']).lower()}")
     print(f"AFTER_CONFIG_NOT_PATCHABLE={result['after_config_not_patchable']}")
     print(f"LIVE_INTROSPECTION_STATUS={result['live_introspection_status']}")
-    return 0 if result["live_introspection_status"] == "PASS" else 1
+    print(f"STDIO_FRAMING_JSON_LINES={framing_proof['json_lines']}")
+    print(f"STDIO_FRAMING_AUTO_FALLBACK={framing_proof['auto_fallback']}")
+    print(f"STDIO_FRAMING_STATUS={framing_proof['status']}")
+    ok = result["live_introspection_status"] == "PASS" and framing_proof["status"] == "PASS"
+    return 0 if ok else 1
 
 
 def cmd_fixture_mcp_server(args: argparse.Namespace) -> int:
@@ -387,7 +415,14 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_demo.add_argument("--task", required=True)
     semantic_demo.add_argument("--max-tools", type=int, default=3)
     semantic_demo.add_argument("--max-schema-tokens", type=int, default=3000)
+    # semantic-demo is fixture-only; the real/mocked Ollama batching proof is the
+    # dedicated `prove-parallel-ollama-demo` command, so this demo cannot present a
+    # mocked pass under an `ollama` backend choice.
+    semantic_demo.add_argument("--embedding-backend", choices=("fixture",), default="fixture")
     semantic_demo.set_defaults(func=cmd_semantic_demo)
+
+    prove_parallel_ollama_demo = sub.add_parser("prove-parallel-ollama-demo")
+    prove_parallel_ollama_demo.set_defaults(func=cmd_prove_parallel_ollama_demo)
 
     compress_responses = sub.add_parser("compress-responses")
     compress_responses.add_argument("--fixtures", type=Path, required=True)
@@ -443,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     allow_start_demo = sub.add_parser("allow-start-demo")
     allow_start_demo.add_argument("--start-timeout-seconds", type=float, default=2.0)
     allow_start_demo.add_argument("--max-stdio-bytes", type=int, default=65536)
+    allow_start_demo.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
     allow_start_demo.set_defaults(func=cmd_allow_start_demo)
 
     return parser

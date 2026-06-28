@@ -498,10 +498,47 @@ def run_fixture_mcp_server(*, mode: str = "ok") -> int:
                 send({"jsonrpc": "2.0", "id": message.get("id"), "result": {"tools": tools}})
 
 
+def prove_stdio_framing(
+    *,
+    start_timeout_seconds: float = 2.0,
+    max_stdio_bytes: int = 65536,
+) -> dict[str, str]:
+    # Always hand back a status dict so the caller can print machine-readable
+    # STDIO_FRAMING_* lines and pick an exit code. A probe failure must surface as
+    # a FAIL status (fail-closed and observable), not an uncaught traceback that
+    # aborts before the status lines are printed.
+    base_args = ["-m", "mcp_context_budget", "_fixture-mcp-server"]
+
+    def _probe(args: list[str], *, stdio_framing: str) -> str:
+        try:
+            introspect_server_tools(
+                server="fixture",
+                command=sys.executable,
+                args=args,
+                env={},
+                start_timeout_seconds=start_timeout_seconds,
+                max_stdio_bytes=max_stdio_bytes,
+                stdio_framing=stdio_framing,
+            )
+        except (ValueError, OSError):
+            return "FAIL"
+        return "PASS"
+
+    json_lines = _probe(base_args, stdio_framing="json-lines")
+    auto_fallback = _probe([*base_args, "--mode", "content-length"], stdio_framing="auto")
+    status = "PASS" if json_lines == "PASS" and auto_fallback == "PASS" else "FAIL"
+    return {
+        "json_lines": json_lines,
+        "auto_fallback": auto_fallback,
+        "status": status,
+    }
+
+
 def run_allow_start_demo(
     *,
     start_timeout_seconds: float = 2.0,
     max_stdio_bytes: int = 65536,
+    stdio_framing: str = "auto",
 ) -> dict[str, Any]:
     import tempfile
     from pathlib import Path
@@ -515,13 +552,20 @@ def run_allow_start_demo(
         config = root / "mcp.json"
         lock = root / "lock.json"
         materialized = root / "materialized"
+        # The fixture server defaults to JSON-lines framing. If the demo is forced
+        # to content-length, the server must speak content-length too; otherwise the
+        # client would frame content-length against a JSON-lines server and the
+        # exposed --stdio-framing content-length choice could never work here.
+        fixture_args = ["-m", "mcp_context_budget", "_fixture-mcp-server"]
+        if stdio_framing == "content-length":
+            fixture_args += ["--mode", "content-length"]
         config.write_text(
             json.dumps(
                 {
                     "mcpServers": {
                         "fixture": {
                             "command": sys.executable,
-                            "args": ["-m", "mcp_context_budget", "_fixture-mcp-server"],
+                            "args": fixture_args,
                             "env": {"DEMO_SECRET": "demo-secret-value"},
                         }
                     }
@@ -537,6 +581,7 @@ def run_allow_start_demo(
             allow_start=True,
             start_timeout_seconds=start_timeout_seconds,
             max_stdio_bytes=max_stdio_bytes,
+            stdio_framing=stdio_framing,
         )
         lock.write_text(
             json.dumps(
@@ -556,6 +601,7 @@ def run_allow_start_demo(
             allow_start=True,
             start_timeout_seconds=start_timeout_seconds,
             max_stdio_bytes=max_stdio_bytes,
+            stdio_framing=stdio_framing,
             materialize_tools_list=materialized,
         )
         rescan_records, _ = load_mcp_config(config, allow_start=False)

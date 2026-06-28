@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-context-budget"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local-first MCP context budget and tool-selection verifier"
 readme = "README.md"
 requires-python = ">=3.11"

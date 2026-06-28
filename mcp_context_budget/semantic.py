@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -86,6 +90,117 @@ def _ollama_embedding(text: str, *, base_url: str, model: str) -> list[float]:
     raise ValueError("Ollama embedding response did not contain an embedding")
 
 
+def _ollama_embeddings_parallel(
+    texts: list[str],
+    *,
+    base_url: str,
+    model: str,
+    max_workers: int | None = None,
+    on_futures: Callable[[list[Future[list[float]]]], None] | None = None,
+) -> list[list[float]]:
+    if not texts:
+        return []
+    workers = min(8, len(texts)) if max_workers is None else min(max_workers, len(texts))
+    if workers <= 1:
+        return [_ollama_embedding(text, base_url=base_url, model=model) for text in texts]
+    ordered: list[list[float] | None] = [None] * len(texts)
+    # Bounded in-flight window instead of pre-submitting the whole batch.
+    #
+    # What this guarantees:
+    #   - Strict concurrency cap: at most `workers` requests are ever in flight,
+    #     and the next text is submitted only after a prior one completes. We never
+    #     pre-enqueue the whole tool list against a worker pool.
+    #   - Prompt fail-closed: on the FIRST observed failure we stop submitting and
+    #     shut down non-blocking (wait=False, cancel_futures=True). The caller sees
+    #     the error without joining still-running requests (each up to the 10s
+    #     urlopen timeout) — re-raising inside a `with ThreadPoolExecutor(...)`
+    #     would instead run shutdown(wait=True) and block on those requests.
+    #
+    # What this does NOT guarantee: that no further requests start while one slow
+    # request is still pending and will eventually fail. Because slots reopen on
+    # each SUCCESSFUL completion, fast successes can keep submitting remaining texts
+    # before a slow failure is observed. We deliberately do not cancel in-flight
+    # work to force an earlier stop; the cap above bounds peak load, and any
+    # in-flight request remains bounded by its own urlopen timeout.
+    executor = ThreadPoolExecutor(max_workers=workers)
+    next_index = 0
+    in_flight: dict[Future[list[float]], int] = {}
+    submitted: list[Future[list[float]]] = []
+
+    def submit_next() -> None:
+        nonlocal next_index
+        future = executor.submit(
+            _ollama_embedding, texts[next_index], base_url=base_url, model=model
+        )
+        in_flight[future] = next_index
+        submitted.append(future)
+        next_index += 1
+        # `on_futures` observes the cumulative set of requests that have actually
+        # been submitted (started). It is called with a fresh list each time the
+        # set grows, so a caller can confirm which requests were ever launched —
+        # work that is never submitted after a failure never appears here.
+        if on_futures is not None:
+            on_futures(list(submitted))
+
+    try:
+        for _ in range(workers):
+            if next_index >= len(texts):
+                break
+            submit_next()
+        while in_flight:
+            done, _pending = wait(set(in_flight), return_when=FIRST_COMPLETED)
+            for future in done:
+                idx = in_flight.pop(future)
+                # Surfaces any worker exception here; the except clause stops the
+                # batch before submitting (or waiting on) further work.
+                ordered[idx] = future.result()
+            while next_index < len(texts) and len(in_flight) < workers:
+                submit_next()
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown(wait=True)
+    for vector in ordered:
+        if vector is None:
+            raise ValueError("parallel Ollama embedding batch returned incomplete results")
+    return [vector for vector in ordered]
+
+
+def prove_parallel_ollama_batching() -> dict[str, str | bool]:
+    from unittest.mock import patch
+
+    tools = [
+        ToolRecord("github", "alpha", "alpha tool", {}),
+        ToolRecord("github", "beta", "beta tool", {}),
+        ToolRecord("github", "gamma", "gamma tool", {}),
+    ]
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            return [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
+        finally:
+            with lock:
+                active -= 1
+
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+        ranked = rank_semantic_tools(
+            tools,
+            task="alpha task",
+            embedding_backend="ollama",
+        )
+
+    batched = peak >= 2 and len(ranked) == len(tools)
+    return {"batched": batched, "status": "PASS" if batched else "FAIL"}
+
+
 def rank_semantic_tools(
     tools: list[ToolRecord],
     *,
@@ -106,16 +221,14 @@ def rank_semantic_tools(
         ]
     elif embedding_backend == "ollama":
         query_vector = _ollama_embedding(task, base_url=ollama_url, model=ollama_model)
+        tool_vectors = _ollama_embeddings_parallel(
+            [tool.search_text for tool in tools],
+            base_url=ollama_url,
+            model=ollama_model,
+        )
         scored = [
-            (
-                _cosine(
-                    query_vector,
-                    _ollama_embedding(tool.search_text, base_url=ollama_url, model=ollama_model),
-                ),
-                tool.schema_tokens,
-                tool,
-            )
-            for tool in tools
+            (_cosine(query_vector, tool_vector), tool.schema_tokens, tool)
+            for tool, tool_vector in zip(tools, tool_vectors, strict=True)
         ]
     else:
         raise ValueError(f"unsupported embedding backend: {embedding_backend}")
