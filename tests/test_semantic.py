@@ -209,6 +209,31 @@ def test_parallel_batch_raises_on_incomplete_results() -> None:
                 )
 
 
+def test_parallel_batch_cancels_pending_futures_on_embedding_error() -> None:
+    hold = threading.Event()
+    calls: list[str] = []
+
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        calls.append(text)
+        if text == "fail":
+            raise ValueError("batch fail")
+        hold.wait(timeout=2)
+        return [1.0, 0.0]
+
+    texts = ["hold-a", "hold-b", "fail", "pending"]
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+        with pytest.raises(ValueError, match="batch fail"):
+            _ollama_embeddings_parallel(
+                texts,
+                base_url="http://localhost:11434",
+                model="m",
+                max_workers=3,
+            )
+
+    assert "fail" in calls
+    assert "pending" not in calls
+
+
 def test_rank_semantic_tools_preserves_ordering_after_parallel_batch() -> None:
     tools = [
         ToolRecord("github", "alpha", "alpha tool", {}),

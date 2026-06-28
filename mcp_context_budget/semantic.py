@@ -107,9 +107,15 @@ def _ollama_embeddings_parallel(
             executor.submit(_ollama_embedding, text, base_url=base_url, model=model): idx
             for idx, text in enumerate(texts)
         }
-        for future in as_completed(futures):
-            idx = futures[future]
-            ordered[idx] = future.result()
+        try:
+            for future in as_completed(futures):
+                idx = futures[future]
+                ordered[idx] = future.result()
+        except Exception:
+            for pending in futures:
+                if not pending.done():
+                    pending.cancel()
+            raise
     for vector in ordered:
         if vector is None:
             raise ValueError(
