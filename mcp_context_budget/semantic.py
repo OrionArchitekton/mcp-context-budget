@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import math
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -86,6 +89,65 @@ def _ollama_embedding(text: str, *, base_url: str, model: str) -> list[float]:
     raise ValueError("Ollama embedding response did not contain an embedding")
 
 
+def _ollama_embeddings_parallel(
+    texts: list[str],
+    *,
+    base_url: str,
+    model: str,
+    max_workers: int | None = None,
+) -> list[list[float]]:
+    if not texts:
+        return []
+    workers = min(8, len(texts)) if max_workers is None else min(max_workers, len(texts))
+    if workers <= 1:
+        return [_ollama_embedding(text, base_url=base_url, model=model) for text in texts]
+    ordered: list[list[float] | None] = [None] * len(texts)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_ollama_embedding, text, base_url=base_url, model=model): idx
+            for idx, text in enumerate(texts)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            ordered[idx] = future.result()
+    return [vector for vector in ordered if vector is not None]
+
+
+def prove_parallel_ollama_batching() -> dict[str, str | bool]:
+    from unittest.mock import patch
+
+    tools = [
+        ToolRecord("github", "alpha", "alpha tool", {}),
+        ToolRecord("github", "beta", "beta tool", {}),
+        ToolRecord("github", "gamma", "gamma tool", {}),
+    ]
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            return [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
+        finally:
+            with lock:
+                active -= 1
+
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+        ranked = rank_semantic_tools(
+            tools,
+            task="alpha task",
+            embedding_backend="ollama",
+        )
+
+    batched = peak >= 2 and len(ranked) == len(tools)
+    return {"batched": batched, "status": "PASS" if batched else "FAIL"}
+
+
 def rank_semantic_tools(
     tools: list[ToolRecord],
     *,
@@ -106,16 +168,14 @@ def rank_semantic_tools(
         ]
     elif embedding_backend == "ollama":
         query_vector = _ollama_embedding(task, base_url=ollama_url, model=ollama_model)
+        tool_vectors = _ollama_embeddings_parallel(
+            [tool.search_text for tool in tools],
+            base_url=ollama_url,
+            model=ollama_model,
+        )
         scored = [
-            (
-                _cosine(
-                    query_vector,
-                    _ollama_embedding(tool.search_text, base_url=ollama_url, model=ollama_model),
-                ),
-                tool.schema_tokens,
-                tool,
-            )
-            for tool in tools
+            (_cosine(query_vector, tool_vector), tool.schema_tokens, tool)
+            for tool, tool_vector in zip(tools, tool_vectors, strict=True)
         ]
     else:
         raise ValueError(f"unsupported embedding backend: {embedding_backend}")

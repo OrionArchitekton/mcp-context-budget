@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from unittest.mock import patch
+
+from mcp_context_budget.models import ToolRecord
+from mcp_context_budget.semantic import prove_parallel_ollama_batching, rank_semantic_tools
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -109,6 +114,48 @@ def test_semantic_select_fails_closed_when_fixture_vector_is_missing(tmp_path: P
     assert "missing embedding vector for tool github/get_issue" in result.stderr
 
 
+def test_parallel_ollama_uses_thread_pool_batching() -> None:
+    tools = [
+        ToolRecord("github", "alpha", "alpha tool", {}),
+        ToolRecord("github", "beta", "beta tool", {}),
+        ToolRecord("github", "gamma", "gamma tool", {}),
+        ToolRecord("github", "delta", "delta tool", {}),
+    ]
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def fake_embedding(text: str, *, base_url: str, model: str) -> list[float]:
+        import time
+
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            return [1.0, 0.0] if "alpha" in text else [0.0, 1.0]
+        finally:
+            with lock:
+                active -= 1
+
+    with patch("mcp_context_budget.semantic._ollama_embedding", side_effect=fake_embedding):
+        ranked = rank_semantic_tools(
+            tools,
+            task="alpha task",
+            embedding_backend="ollama",
+        )
+
+    assert peak >= 2
+    assert len(ranked) == len(tools)
+
+
+def test_prove_parallel_ollama_batching_passes() -> None:
+    proof = prove_parallel_ollama_batching()
+    assert proof["status"] == "PASS"
+    assert proof["batched"] is True
+
+
 def test_semantic_demo_prints_new_capability_proof() -> None:
     result = run_cli(
         "semantic-demo",
@@ -125,3 +172,5 @@ def test_semantic_demo_prints_new_capability_proof() -> None:
     assert lines["LEXICAL_SELECTED_WRONG"] == "true"
     assert lines["SEMANTIC_SELECTED_TOOL"] == "github/get_issue"
     assert lines["SEMANTIC_STATUS"] == "PASS"
+    assert lines["SEMANTIC_SELECT_STATUS"] == "PASS"
+    assert lines["PARALLEL_OLLAMA_BATCHED"] == "true"

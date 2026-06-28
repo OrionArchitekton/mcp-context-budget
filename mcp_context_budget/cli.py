@@ -6,11 +6,7 @@ import sys
 from pathlib import Path
 
 from mcp_context_budget.budget import check_lock, load_response_fixtures, scan_records
-from mcp_context_budget.compress import (
-    compress_response_fixtures,
-    run_compress_demo,
-    run_live_compress_demo,
-)
+from mcp_context_budget.compress import compress_response_fixtures, run_compress_demo
 from mcp_context_budget.config_audit import audit_config, run_config_audit_demo, should_fail
 from mcp_context_budget.config_edit import (
     apply_config_selection,
@@ -27,7 +23,11 @@ from mcp_context_budget.live_stdio import (
 from mcp_context_budget.loaders import load_records
 from mcp_context_budget.reporting import markdown_report, sarif_from_lock, write_json
 from mcp_context_budget.selector import select_tools
-from mcp_context_budget.semantic import run_semantic_demo, select_semantic_tools
+from mcp_context_budget.semantic import (
+    prove_parallel_ollama_batching,
+    run_semantic_demo,
+    select_semantic_tools,
+)
 
 
 def _add_input_args(parser: argparse.ArgumentParser) -> None:
@@ -179,6 +179,7 @@ def cmd_semantic_select(args: argparse.Namespace) -> int:
 
 
 def cmd_semantic_demo(args: argparse.Namespace) -> int:
+    parallel_proof = prove_parallel_ollama_batching()
     result = run_semantic_demo(
         task=args.task,
         max_tools=args.max_tools,
@@ -190,7 +191,10 @@ def cmd_semantic_demo(args: argparse.Namespace) -> int:
     for tool_id in result["semantic_selected_tools"]:
         print(f"SELECTED_TOOL={tool_id}")
     print(f"SEMANTIC_STATUS={result['semantic_status']}")
-    return 0 if result["semantic_status"] == "PASS" else 1
+    print(f"SEMANTIC_SELECT_STATUS={result['semantic_status']}")
+    print(f"PARALLEL_OLLAMA_BATCHED={str(parallel_proof['batched']).lower()}")
+    ok = result["semantic_status"] == "PASS" and parallel_proof["status"] == "PASS"
+    return 0 if ok else 1
 
 
 def cmd_compress_responses(args: argparse.Namespace) -> int:
@@ -307,20 +311,6 @@ def cmd_allow_start_demo(args: argparse.Namespace) -> int:
     print(f"STDIO_FRAMING_STATUS={framing_proof['status']}")
     ok = result["live_introspection_status"] == "PASS" and framing_proof["status"] == "PASS"
     return 0 if ok else 1
-
-
-def cmd_live_compress_demo(args: argparse.Namespace) -> int:
-    result = run_live_compress_demo(
-        max_response_tokens=args.max_response_tokens,
-        start_timeout_seconds=args.start_timeout_seconds,
-        max_stdio_bytes=args.max_stdio_bytes,
-        stdio_framing=args.stdio_framing,
-    )
-    print(f"LIVE_RESPONSE_BEFORE_TOKENS={result['before_response_tokens']}")
-    print(f"LIVE_RESPONSE_AFTER_TOKENS={result['after_response_tokens']}")
-    print(f"LIVE_RESPONSE_COMPRESSED={str(result['was_compressed']).lower()}")
-    print(f"LIVE_RESPONSE_COMPRESSION_STATUS={result['live_response_compression_status']}")
-    return 0 if result["live_response_compression_status"] == "PASS" else 1
 
 
 def cmd_fixture_mcp_server(args: argparse.Namespace) -> int:
@@ -474,13 +464,6 @@ def build_parser() -> argparse.ArgumentParser:
     allow_start_demo.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
     allow_start_demo.set_defaults(func=cmd_allow_start_demo)
 
-    live_compress_demo = sub.add_parser("live-compress-demo")
-    live_compress_demo.add_argument("--max-response-tokens", type=int, default=4000)
-    live_compress_demo.add_argument("--start-timeout-seconds", type=float, default=2.0)
-    live_compress_demo.add_argument("--max-stdio-bytes", type=int, default=65536)
-    live_compress_demo.add_argument("--stdio-framing", choices=STDIO_FRAMINGS, default="auto")
-    live_compress_demo.set_defaults(func=cmd_live_compress_demo)
-
     return parser
 
 
@@ -499,7 +482,6 @@ def main(argv: list[str] | None = None) -> int:
                 "exit-before-tools",
                 "stderr-secret",
                 "large",
-                "oversized-call",
             ),
             default="ok",
         )

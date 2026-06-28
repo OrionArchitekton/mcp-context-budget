@@ -237,7 +237,7 @@ docker run --rm mcp-context-budget:local semantic-demo \
 docker run --rm mcp-context-budget:local compress-demo --max-response-tokens 4000
 docker run --rm mcp-context-budget:local config-demo
 docker run --rm mcp-context-budget:local allow-start-demo --start-timeout-seconds 2 --max-stdio-bytes 65536 --stdio-framing auto
-docker run --rm mcp-context-budget:local live-compress-demo --max-response-tokens 4000 --start-timeout-seconds 2
+docker run --rm mcp-context-budget:local semantic-demo --task "diagnose bug report" --max-tools 3 --max-schema-tokens 3000
 docker run --rm mcp-context-budget:local config-audit-demo
 docker run --rm mcp-context-budget:local config-multiserver-demo
 ```
@@ -265,10 +265,11 @@ These are not v0.4 commitments; they break the local-first CLI verifier shape.
 
 ### Shipped in v0.4
 
-- `live-compress-demo` — opt-in bounded sampling of a live stdio tool response
-  during fixture-proven startup, then extractive compression under a response
-  token cap. Not a proxy; not default CI.
+- Parallelized Ollama embeddings for `semantic-select` when
+  `--embedding-backend ollama` is explicitly selected (fixture backend remains
+  the default for CI/docker).
 
 ### Deferred to v0.5
 
-- Parallelized Ollama embeddings and broader CLI polish.
+- Automatic response compression for arbitrary live MCP servers.
+- Broader CLI polish.

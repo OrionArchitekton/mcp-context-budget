@@ -6,11 +6,11 @@
   `--allow-start` introspection. `allow-start-demo` now prints
   `STDIO_FRAMING_*=PASS` proof lines without changing the transport
   implementation.
-- Add opt-in `live-compress-demo` for bounded live stdio tool-response
-  sampling plus extractive compression. The probe is timeout-bounded,
-  byte-bounded, fixture-proven, and never intercepts ongoing tool traffic.
-- Defer parallel Ollama embeddings and broader CLI polish to v0.5 per the
-  gate-approved AMBITIOUS cut.
+- Parallelize Ollama embeddings in `semantic-select` via bounded stdlib
+  `ThreadPoolExecutor` batching when `--embedding-backend ollama` is selected.
+  `semantic-demo` prints `PARALLEL_OLLAMA_BATCHED=true` and
+  `SEMANTIC_SELECT_STATUS=PASS`.
+- Defer live-response-compression and broader CLI polish to v0.5.
 
 ## 0.3.0 - 2026-06-20
 
