@@ -62,9 +62,13 @@ gh run watch -R OrionArchitekton/mcp-context-budget <run-id>
 # PyPI artifact exists (wheel + sdist) and installs clean:
 curl -s https://pypi.org/pypi/mcp-context-budget/json | python3 -c "import sys,json;print(json.load(sys.stdin)['info']['version'])"
 uv venv /tmp/verify-mcb -q && uv pip install --python /tmp/verify-mcb/bin/python "mcp-context-budget==X.Y.Z" -q
-/tmp/verify-mcb/bin/mcp-context-budget --version   # expect: mcp-context-budget X.Y.Z
-# GHCR image:
-docker pull ghcr.io/orionarchitekton/mcp-context-budget:X.Y.Z
+# The CLI requires a subcommand (no top-level --version), so assert the installed
+# version via package metadata and smoke the console entrypoint with --help:
+/tmp/verify-mcb/bin/python -c "from importlib.metadata import version; print(version('mcp-context-budget'))"  # expect: X.Y.Z
+/tmp/verify-mcb/bin/mcp-context-budget --help >/dev/null && echo "entrypoint OK"
+# GHCR image — the workflow tags images with the git ref (docker/metadata-action
+# default `type=ref,event=tag`), so the tag is vX.Y.Z, not X.Y.Z:
+docker pull ghcr.io/orionarchitekton/mcp-context-budget:vX.Y.Z
 ```
 
 ## Rollback
