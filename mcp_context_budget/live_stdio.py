@@ -547,13 +547,20 @@ def run_allow_start_demo(
         config = root / "mcp.json"
         lock = root / "lock.json"
         materialized = root / "materialized"
+        # The fixture server defaults to JSON-lines framing. If the demo is forced
+        # to content-length, the server must speak content-length too; otherwise the
+        # client would frame content-length against a JSON-lines server and the
+        # exposed --stdio-framing content-length choice could never work here.
+        fixture_args = ["-m", "mcp_context_budget", "_fixture-mcp-server"]
+        if stdio_framing == "content-length":
+            fixture_args += ["--mode", "content-length"]
         config.write_text(
             json.dumps(
                 {
                     "mcpServers": {
                         "fixture": {
                             "command": sys.executable,
-                            "args": ["-m", "mcp_context_budget", "_fixture-mcp-server"],
+                            "args": fixture_args,
                             "env": {"DEMO_SECRET": "demo-secret-value"},
                         }
                     }

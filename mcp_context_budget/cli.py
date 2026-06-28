@@ -191,13 +191,12 @@ def cmd_semantic_demo(args: argparse.Namespace) -> int:
         print(f"SELECTED_TOOL={tool_id}")
     print(f"SEMANTIC_STATUS={result['semantic_status']}")
     print(f"SEMANTIC_SELECT_STATUS={result['semantic_status']}")
-    if args.embedding_backend == "ollama":
-        parallel_proof = prove_parallel_ollama_batching()
-        print(f"PARALLEL_OLLAMA_BATCHED={str(parallel_proof['batched']).lower()}")
-        ok = result["semantic_status"] == "PASS" and parallel_proof["status"] == "PASS"
-    else:
-        print("PARALLEL_OLLAMA_BATCHED=skipped")
-        ok = result["semantic_status"] == "PASS"
+    # semantic-demo is a fixture-backed proof only. The parallel-Ollama batching
+    # proof lives on its own command (`prove-parallel-ollama-demo`) so a demo
+    # invocation can never print a mocked PARALLEL_OLLAMA_BATCHED=true that looks
+    # like a real Ollama run. Always emit the skipped marker here.
+    print("PARALLEL_OLLAMA_BATCHED=skipped")
+    ok = result["semantic_status"] == "PASS"
     return 0 if ok else 1
 
 
@@ -416,9 +415,10 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_demo.add_argument("--task", required=True)
     semantic_demo.add_argument("--max-tools", type=int, default=3)
     semantic_demo.add_argument("--max-schema-tokens", type=int, default=3000)
-    semantic_demo.add_argument(
-        "--embedding-backend", choices=("fixture", "ollama"), default="fixture"
-    )
+    # semantic-demo is fixture-only; the real/mocked Ollama batching proof is the
+    # dedicated `prove-parallel-ollama-demo` command, so this demo cannot present a
+    # mocked pass under an `ollama` backend choice.
+    semantic_demo.add_argument("--embedding-backend", choices=("fixture",), default="fixture")
     semantic_demo.set_defaults(func=cmd_semantic_demo)
 
     prove_parallel_ollama_demo = sub.add_parser("prove-parallel-ollama-demo")

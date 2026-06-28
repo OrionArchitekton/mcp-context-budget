@@ -146,3 +146,22 @@ def test_allow_start_demo_proves_materialized_enforcement() -> None:
     assert lines["STDIO_FRAMING_JSON_LINES"] == "PASS"
     assert lines["STDIO_FRAMING_AUTO_FALLBACK"] == "PASS"
     assert lines["STDIO_FRAMING_STATUS"] == "PASS"
+
+
+def test_allow_start_demo_honors_content_length_framing() -> None:
+    # When the demo is forced to content-length, the fixture server must also
+    # speak content-length; otherwise the client frames content-length against a
+    # JSON-lines server and the exposed choice cannot work.
+    result = run_cli(
+        "allow-start-demo",
+        "--start-timeout-seconds",
+        "2",
+        "--stdio-framing",
+        "content-length",
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    assert lines["ALLOW_START_FIXTURE_SERVER"] == "started"
+    assert int(lines["LIVE_TOOLS_LISTED"]) >= 2
+    assert lines["LIVE_INTROSPECTION_STATUS"] == "PASS"
